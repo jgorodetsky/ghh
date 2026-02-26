@@ -1,0 +1,488 @@
+#!/usr/bin/env bash
+# ghh — Your entire git + GitHub workflow in one searchable command.
+# https://github.com/jgorodetsky/ghh
+# MIT License
+
+GHH_VERSION="0.1.0"
+
+# ---------------------------------------------------------------------------
+# Platform detection
+# ---------------------------------------------------------------------------
+# Sets GHH_OPEN (browser opener) and GHH_COPY (clipboard copy) based on OS.
+
+_ghh_detect_platform() {
+  case "$(uname -s)" in
+    Darwin)
+      GHH_PLATFORM="macos"
+      GHH_OPEN="open"
+      GHH_COPY="pbcopy"
+      ;;
+    Linux)
+      if grep -qi microsoft /proc/version 2>/dev/null; then
+        GHH_PLATFORM="wsl"
+        GHH_OPEN="wslview"
+        if command -v clip.exe &>/dev/null; then
+          GHH_COPY="clip.exe"
+        elif command -v xclip &>/dev/null; then
+          GHH_COPY="xclip -selection clipboard"
+        elif command -v xsel &>/dev/null; then
+          GHH_COPY="xsel --clipboard"
+        else
+          GHH_COPY=""
+        fi
+      else
+        GHH_PLATFORM="linux"
+        GHH_OPEN="xdg-open"
+        if command -v xclip &>/dev/null; then
+          GHH_COPY="xclip -selection clipboard"
+        elif command -v xsel &>/dev/null; then
+          GHH_COPY="xsel --clipboard"
+        else
+          GHH_COPY=""
+        fi
+      fi
+      ;;
+    *)
+      GHH_PLATFORM="unknown"
+      GHH_OPEN="open"
+      GHH_COPY=""
+      ;;
+  esac
+}
+
+_ghh_detect_platform
+
+# ---------------------------------------------------------------------------
+# Dependency checks
+# ---------------------------------------------------------------------------
+
+_ghh_check_fzf() {
+  if ! command -v fzf &>/dev/null; then
+    echo "ghh: fzf is required but not installed."
+    case "$GHH_PLATFORM" in
+      macos) echo "  Install: brew install fzf" ;;
+      linux) echo "  Install: sudo apt install fzf  (or see https://github.com/junegunn/fzf#installation)" ;;
+      wsl)   echo "  Install: sudo apt install fzf" ;;
+    esac
+    return 1
+  fi
+  return 0
+}
+
+_ghh_check_git() {
+  if ! command -v git &>/dev/null; then
+    echo "ghh: git is required but not installed."
+    return 1
+  fi
+  return 0
+}
+
+_ghh_check_gh() {
+  if ! command -v gh &>/dev/null; then
+    echo "ghh: gh (GitHub CLI) is required for GitHub commands."
+    case "$GHH_PLATFORM" in
+      macos) echo "  Install: brew install gh" ;;
+      linux) echo "  Install: see https://github.com/cli/cli/blob/trunk/docs/install_linux.md" ;;
+      wsl)   echo "  Install: see https://github.com/cli/cli/blob/trunk/docs/install_linux.md" ;;
+    esac
+    return 1
+  fi
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# Utility: open URL cross-platform
+# ---------------------------------------------------------------------------
+
+_ghh_open_url() {
+  local url="$1"
+  if command -v "$GHH_OPEN" &>/dev/null; then
+    "$GHH_OPEN" "$url"
+  else
+    echo "Open this URL in your browser: $url"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Utility: copy to clipboard cross-platform
+# ---------------------------------------------------------------------------
+
+_ghh_copy() {
+  if [[ -n "$GHH_COPY" ]]; then
+    echo -n "$1" | eval "$GHH_COPY"
+    echo "Copied to clipboard."
+  else
+    echo "Clipboard not available. Command:"
+    echo "  $1"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# ghh-version — print version
+# ---------------------------------------------------------------------------
+
+ghh-version() {
+  echo "ghh $GHH_VERSION"
+}
+
+# ---------------------------------------------------------------------------
+# ghh-update — pull latest from GitHub
+# ---------------------------------------------------------------------------
+
+ghh-update() {
+  local install_dir="${GHH_DIR:-$HOME/.ghh}"
+  if [[ -d "$install_dir/.git" ]]; then
+    echo "Updating ghh from GitHub..."
+    git -C "$install_dir" pull --rebase
+    echo "Updated. Restart your shell to pick up changes."
+  elif command -v brew &>/dev/null && brew list ghh &>/dev/null 2>&1; then
+    echo "Updating ghh via Homebrew..."
+    brew upgrade ghh
+  else
+    echo "ghh is not installed via git or Homebrew."
+    echo "Re-run the installer:"
+    echo "  curl -fsSL https://raw.githubusercontent.com/jgorodetsky/ghh/main/install.sh | bash"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# gc — Interactive conventional commit
+# ---------------------------------------------------------------------------
+# Walks you through building a conventional commit message with fzf.
+# Does NOT run git add — you stage files yourself first.
+
+gc() {
+  if ! git rev-parse --is-inside-work-tree &>/dev/null; then
+    echo "Not a git repository."; return 1
+  fi
+  _ghh_check_fzf || return 1
+
+  # Step 1: pick commit type
+  local type
+  type=$(printf "%s\n" \
+    "feat     -- A new feature" \
+    "fix      -- A bug fix" \
+    "docs     -- Documentation only changes" \
+    "style    -- Code style (formatting, semicolons)" \
+    "refactor -- Code refactor (no fix, no feature)" \
+    "perf     -- Performance improvement" \
+    "test     -- Adding or correcting tests" \
+    "build    -- Build system or dependencies" \
+    "ci       -- CI configuration changes" \
+    "chore    -- Other changes (no src/test)" \
+    "revert   -- Reverts a previous commit" \
+    | fzf --height=14 --reverse --no-info --prompt="Select commit type: " \
+    | awk '{print $1}')
+  [[ -z "$type" ]] && echo "Cancelled." && return 1
+
+  clear
+  echo "------------------------------------"
+  echo "  Type: $type"
+  echo "------------------------------------"
+
+  # Step 2: optional scope
+  printf "\nScope (optional, enter to skip): "
+  read -r scope
+
+  clear
+  local header="$type"
+  [[ -n "$scope" ]] && header="$type($scope)"
+
+  echo "------------------------------------"
+  echo "  Building: $header: ..."
+  echo "------------------------------------"
+
+  # Step 3: commit message
+  printf "\nType your commit message: "
+  read -r message
+  [[ -z "$message" ]] && echo "No message. Cancelled." && return 1
+
+  local full_message="$header: $message"
+
+  # Step 4: preview and confirm
+  clear
+  echo "------------------------------------"
+  echo "  Preview"
+  echo "------------------------------------"
+  echo ""
+  echo "  $full_message"
+  echo ""
+  printf "Confirm? [Y/n]: "
+  read -r confirm
+  [[ "$confirm" =~ ^[Nn]$ ]] && echo "Cancelled." && return 1
+
+  git commit -m "$full_message"
+}
+
+# ---------------------------------------------------------------------------
+# ghh — The main command center
+# ---------------------------------------------------------------------------
+# A single searchable menu of 100+ git and gh commands.
+# Type what you're thinking, pick a command, run it.
+
+ghh() {
+  _ghh_check_fzf || return 1
+
+  # -------------------------------------------------------------------------
+  # Command definitions
+  # -------------------------------------------------------------------------
+  # Format: COMMAND @@ description
+  # The @@ delimiter separates the executable command from its description.
+  # fzf displays the full line; we extract the command from before @@.
+  # Lines starting with "──" are section headers (non-selectable).
+
+  local selection
+  selection=$(printf "%s\n" \
+    "── STAGE & COMMIT ─────────────────────────────────────" \
+    "gc @@ conventional commit (interactive)" \
+    "git add . @@ stage all changes" \
+    "STAGE_FILES @@ stage specific files (pick)" \
+    "git add -p @@ stage specific hunks interactively" \
+    "git stash @@ stash current changes" \
+    "git stash pop @@ pop last stash" \
+    "PICK_STASH @@ pick a stash to apply" \
+    "" \
+    "── DIFF & REVIEW ──────────────────────────────────────" \
+    "git diff @@ unstaged changes" \
+    "git diff --staged @@ staged changes" \
+    "git diff main @@ compare branch vs main" \
+    "git diff --name-only main @@ changed filenames vs main" \
+    "git diff HEAD~1 HEAD @@ last commit diff" \
+    "git diff --name-only HEAD~1 HEAD @@ last commit files only" \
+    "git show HEAD @@ show last commit in full" \
+    "git log --oneline -15 @@ recent commits" \
+    "git log --oneline --graph -20 @@ commit graph" \
+    "BLAME_FILE @@ blame a file (pick)" \
+    "" \
+    "── BRANCH ─────────────────────────────────────────────" \
+    "CHECKOUT_BRANCH @@ switch branch (fuzzy)" \
+    "git branch -a @@ list all branches" \
+    "DELETE_BRANCH @@ delete a branch (pick)" \
+    "git pull --rebase @@ pull with rebase" \
+    "git pull --rebase && git push @@ pull rebase then push" \
+    "git push @@ push current branch" \
+    "git push -u origin HEAD @@ push & set upstream" \
+    "MERGE_BRANCH @@ merge a branch (pick)" \
+    "" \
+    "── REWRITE HISTORY ────────────────────────────────────" \
+    "git reset HEAD~1 --soft @@ undo last commit (keep changes)" \
+    "git reset HEAD~1 --hard @@ undo last commit (destroy)" \
+    "git checkout -- . @@ discard all unstaged changes" \
+    "git commit --amend --no-edit @@ amend last commit (keep msg)" \
+    "git commit --amend @@ amend last commit (edit msg)" \
+    "SQUASH_N @@ squash last N commits" \
+    "REBASE_N @@ interactive rebase last N" \
+    "" \
+    "── STATUS & INFO ──────────────────────────────────────" \
+    "git status -sb @@ short status" \
+    "git remote -v @@ show remotes" \
+    "git config user.email @@ show git email" \
+    "git rev-parse --abbrev-ref HEAD @@ current branch name" \
+    "git log --oneline --all --graph @@ full repo graph" \
+    "" \
+    "── PR: CREATE & EDIT ──────────────────────────────────" \
+    "gh pr create @@ create PR interactively" \
+    "gh pr create --fill @@ create PR from commit msgs" \
+    "gh pr create --draft @@ create as draft" \
+    "gh pr create --title X --body Y @@ create with title and body" \
+    "gh pr edit --title 'new title' @@ edit PR title" \
+    "gh pr edit --add-label bug @@ add label" \
+    "gh pr edit --add-reviewer user @@ add reviewer" \
+    "gh pr edit --add-assignee @me @@ assign yourself" \
+    "gh pr ready @@ mark ready for review" \
+    "gh pr ready --undo @@ convert to draft" \
+    "gh pr close @@ close PR" \
+    "gh pr reopen @@ reopen PR" \
+    "" \
+    "── PR: VIEW & REVIEW ─────────────────────────────────" \
+    "gh pr list @@ list open PRs" \
+    "gh pr list --author @me @@ list my PRs" \
+    "gh pr list --search review-requested:@me @@ PRs needing my review" \
+    "gh pr list --state merged @@ list merged PRs" \
+    "gh pr list --label bug @@ list PRs with label" \
+    "gh pr view @@ view current PR details" \
+    "gh pr view 123 @@ view PR #123" \
+    "gh pr view --web @@ open in browser" \
+    "gh pr view --comments @@ show all comments" \
+    "gh pr diff @@ show PR diff" \
+    "gh pr diff 123 @@ diff for PR #123" \
+    "PR_CHECKOUT @@ checkout a PR locally (pick)" \
+    "" \
+    "── PR: CHECKS & CI ────────────────────────────────────" \
+    "gh pr checks @@ show CI status" \
+    "gh pr checks --watch @@ watch until checks complete" \
+    "gh pr checks --required @@ show only required checks" \
+    "DEEP_CHECKS @@ drill into a specific check" \
+    "" \
+    "── PR: MERGE ──────────────────────────────────────────" \
+    "gh pr merge --squash @@ squash merge" \
+    "gh pr merge --squash --auto @@ auto-merge when checks pass" \
+    "gh pr merge --squash --delete-branch @@ squash merge & delete branch" \
+    "gh pr merge --rebase @@ rebase merge" \
+    "gh pr merge --merge @@ merge commit" \
+    "gh pr merge --delete-branch @@ merge and delete branch" \
+    "" \
+    "── PR: FEEDBACK ───────────────────────────────────────" \
+    "gh pr review --approve @@ approve PR" \
+    "gh pr review --approve -b 'lgtm' @@ approve with comment" \
+    "gh pr review --request-changes @@ request changes" \
+    "gh pr review --comment -b 'msg' @@ leave review comment" \
+    "PR_COMMENT @@ comment on PR (type msg)" \
+    "" \
+    "── CI / WORKFLOW RUNS ─────────────────────────────────" \
+    "gh run list @@ list recent runs" \
+    "gh run list --status failure @@ list failed runs" \
+    "gh run list --branch main @@ runs on main" \
+    "gh run view @@ view latest run" \
+    "gh run view --log-failed @@ only failed step logs" \
+    "gh run view --web @@ open run in browser" \
+    "gh run watch @@ live stream current run" \
+    "gh run rerun --failed @@ rerun only failed jobs" \
+    "gh run rerun @@ rerun latest run" \
+    "gh run download @@ download artifacts" \
+    "gh run cancel @@ cancel in-progress run" \
+    "" \
+    "── ISSUES ─────────────────────────────────────────────" \
+    "gh issue list @@ list open issues" \
+    "gh issue list --assignee @me @@ my issues" \
+    "gh issue list --label bug @@ issues with label" \
+    "gh issue view --web @@ open issue in browser" \
+    "gh issue create @@ create interactively" \
+    "gh issue close @@ close issue" \
+    "gh issue comment --body 'msg' @@ comment on issue" \
+    "" \
+    "── REPO & SEARCH ─────────────────────────────────────" \
+    "gh repo view --web @@ open repo in browser" \
+    "gh repo clone owner/repo @@ clone a repo" \
+    "gh repo fork @@ fork current repo" \
+    "gh search repos 'query' @@ search repos" \
+    "gh search code 'query' @@ search code" \
+    "gh api notifications @@ your notifications" \
+    | fzf --height=30 --reverse --no-info \
+          --prompt="ghh > " \
+          --header="type to search · enter to run · esc to cancel" \
+    )
+
+  # Exit on empty selection, section headers, or blank lines
+  [[ -z "$selection" || "$selection" == ──* || "$selection" == "" ]] && return 0
+
+  # -------------------------------------------------------------------------
+  # Extract the command from before the @@ delimiter
+  # -------------------------------------------------------------------------
+  local actual_cmd
+  actual_cmd=$(echo "$selection" | sed 's/ *@@.*//')
+
+  # -------------------------------------------------------------------------
+  # Handle special interactive commands
+  # -------------------------------------------------------------------------
+  case "$actual_cmd" in
+
+    "gc")
+      gc
+      ;;
+
+    "STAGE_FILES")
+      local files
+      files=$({ git diff --name-only 2>/dev/null; git ls-files --others --exclude-standard 2>/dev/null; } \
+        | sort -u | fzf --multi --height=15 --reverse --no-info --prompt="Stage files: ")
+      [[ -z "$files" ]] && echo "Cancelled." && return 1
+      echo "$files" | xargs git add
+      echo "Staged."
+      ;;
+
+    "PICK_STASH")
+      local stash
+      stash=$(git stash list | fzf --height=10 --reverse --no-info --prompt="Pick stash: " | cut -d: -f1)
+      [[ -z "$stash" ]] && echo "Cancelled." && return 1
+      git stash apply "$stash"
+      ;;
+
+    "BLAME_FILE")
+      local file
+      file=$(git ls-files | fzf --height=15 --reverse --no-info --prompt="Blame file: ")
+      [[ -z "$file" ]] && echo "Cancelled." && return 1
+      git blame "$file"
+      ;;
+
+    "CHECKOUT_BRANCH")
+      local branch
+      branch=$(git branch --sort=-committerdate | sed 's/^[* ]*//' | fzf --height=15 --reverse --no-info --prompt="Switch to: ")
+      [[ -z "$branch" ]] && echo "Cancelled." && return 1
+      git checkout "$branch"
+      ;;
+
+    "DELETE_BRANCH")
+      local branch
+      branch=$(git branch | sed 's/^[* ]*//' | fzf --height=15 --reverse --no-info --prompt="Delete branch: ")
+      [[ -z "$branch" ]] && echo "Cancelled." && return 1
+      printf "Delete '%s'? [y/N]: " "$branch"; read -r confirm
+      [[ "$confirm" =~ ^[Yy]$ ]] && git branch -d "$branch" || echo "Cancelled."
+      ;;
+
+    "MERGE_BRANCH")
+      local branch
+      branch=$(git branch | sed 's/^[* ]*//' | fzf --height=15 --reverse --no-info --prompt="Merge branch: ")
+      [[ -z "$branch" ]] && echo "Cancelled." && return 1
+      git merge --no-ff "$branch"
+      ;;
+
+    "SQUASH_N")
+      printf "How many commits to squash? "
+      read -r n
+      [[ -z "$n" ]] && echo "Cancelled." && return 1
+      git reset --soft "HEAD~$n" && git commit
+      ;;
+
+    "REBASE_N")
+      printf "How many commits to rebase? "
+      read -r n
+      [[ -z "$n" ]] && echo "Cancelled." && return 1
+      git rebase -i "HEAD~$n"
+      ;;
+
+    "PR_CHECKOUT")
+      _ghh_check_gh || return 1
+      local pr
+      pr=$(gh pr list | fzf --height=15 --reverse --no-info --prompt="Checkout PR: " | awk '{print $1}')
+      [[ -z "$pr" ]] && echo "Cancelled." && return 1
+      gh pr checkout "$pr"
+      ;;
+
+    "PR_COMMENT")
+      _ghh_check_gh || return 1
+      printf "Comment: "
+      read -r comment
+      [[ -z "$comment" ]] && echo "Cancelled." && return 1
+      gh pr comment --body "$comment"
+      ;;
+
+    "DEEP_CHECKS")
+      _ghh_check_gh || return 1
+      echo "Fetching checks..."
+      local check
+      check=$(gh pr checks 2>&1 | fzf --height=15 --reverse --no-info \
+        --prompt="Pick a check > " --header="Enter to open in browser")
+      [[ -z "$check" ]] && return 0
+      local url
+      url=$(echo "$check" | awk '{print $NF}')
+      if [[ "$url" == http* ]]; then
+        _ghh_open_url "$url"
+      else
+        echo "$check"
+      fi
+      ;;
+
+    # -----------------------------------------------------------------------
+    # Default: show the command and prompt to run / copy / cancel
+    # -----------------------------------------------------------------------
+    *)
+      printf "\n-> %s\n\nRun it? [Y/n/copy]: " "$actual_cmd"
+      read -r action
+      case "$action" in
+        [Nn]) return 0 ;;
+        [Cc]*|copy) _ghh_copy "$actual_cmd" ;;
+        *) eval "$actual_cmd" ;;
+      esac
+      ;;
+  esac
+}
