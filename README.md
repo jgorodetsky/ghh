@@ -3,7 +3,6 @@
 **Your entire git + GitHub workflow in one searchable command.**
 
 ![demo](demo/ghh-demo.gif)
-*Demo coming soon*
 
 ---
 
