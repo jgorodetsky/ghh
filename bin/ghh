@@ -263,6 +263,15 @@ ghh() {
     "git push @@ push current branch" \
     "git push -u origin HEAD @@ push & set upstream" \
     "MERGE_BRANCH @@ merge a branch (pick)" \
+    "RESET_TO_REMOTE @@ reset current branch to match remote" \
+    "" \
+    "── WORKTREE ───────────────────────────────────────────" \
+    "WORKTREE_ADD @@ add a new worktree (pick branch)" \
+    "WORKTREE_SWITCH @@ switch to a worktree (cd)" \
+    "git worktree list @@ list all worktrees" \
+    "WORKTREE_REMOVE @@ remove a worktree (pick)" \
+    "WORKTREE_CLEANUP @@ bulk remove worktrees + branches" \
+    "git worktree prune @@ clean up stale worktree refs" \
     "" \
     "── REWRITE HISTORY ────────────────────────────────────" \
     "git reset HEAD~1 --soft @@ undo last commit (keep changes)" \
@@ -274,6 +283,7 @@ ghh() {
     "REBASE_N @@ interactive rebase last N" \
     "" \
     "── STATUS & INFO ──────────────────────────────────────" \
+    "git status @@ full status (verbose)" \
     "git status -sb @@ short status" \
     "git remote -v @@ show remotes" \
     "git config user.email @@ show git email" \
@@ -424,6 +434,156 @@ ghh() {
       branch=$(git branch | sed 's/^[* ]*//' | fzf --height=15 --reverse --no-info --prompt="Merge branch: ")
       [[ -z "$branch" ]] && echo "Cancelled." && return 1
       git merge --no-ff "$branch"
+      ;;
+
+    "RESET_TO_REMOTE")
+      # Auto-detect the default remote branch
+      local default_branch
+      default_branch=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/origin/||')
+      if [[ -z "$default_branch" ]]; then
+        for candidate in main master develop; do
+          if git rev-parse --verify "origin/$candidate" &>/dev/null; then
+            default_branch="$candidate"
+            break
+          fi
+        done
+      fi
+      # Let user pick: detected default or any remote branch
+      local remote_branch
+      if [[ -n "$default_branch" ]]; then
+        remote_branch=$(printf "%s\n" "$default_branch (default)" \
+          $(git branch -r --sort=-committerdate | sed 's|origin/||' | sed 's/^[* ]*//' \
+            | grep -v HEAD | grep -v "^${default_branch}$") \
+          | fzf --height=15 --reverse --no-info --prompt="Reset to remote branch: ")
+        [[ -z "$remote_branch" ]] && echo "Cancelled." && return 1
+        remote_branch="${remote_branch% (default)}"
+      else
+        remote_branch=$(git branch -r --sort=-committerdate | sed 's|origin/||' | sed 's/^[* ]*//' \
+          | grep -v HEAD \
+          | fzf --height=15 --reverse --no-info --prompt="Reset to remote branch: ")
+        [[ -z "$remote_branch" ]] && echo "Cancelled." && return 1
+      fi
+      local current_branch
+      current_branch=$(git rev-parse --abbrev-ref HEAD)
+      if [[ "$current_branch" != "$remote_branch" ]]; then
+        printf "You're on '%s'. Switch to '%s' first? [Y/n]: " "$current_branch" "$remote_branch"
+        read -r switch_confirm
+        if [[ "$switch_confirm" =~ ^[Nn]$ ]]; then
+          echo "Cancelled."; return 1
+        fi
+        git checkout "$remote_branch" || return 1
+      fi
+      echo ""
+      echo "This will:"
+      echo "  git fetch origin"
+      echo "  git reset --hard origin/$remote_branch"
+      echo ""
+      printf "Reset '%s' to match remote? [y/N]: " "$remote_branch"; read -r confirm
+      if [[ "$confirm" =~ ^[Yy]$ ]]; then
+        git fetch origin
+        git reset --hard "origin/$remote_branch"
+        echo "Reset to origin/$remote_branch."
+      else
+        echo "Cancelled."
+      fi
+      ;;
+
+    "WORKTREE_ADD")
+      git fetch --prune &>/dev/null
+      local branch
+      branch=$(printf "%s\n" "[new branch]" \
+        $(git branch -a --sort=-committerdate | sed 's/^[* ]*//' | sed 's|remotes/||') \
+        | fzf --height=15 --reverse --no-info --prompt="Worktree branch: ")
+      [[ -z "$branch" ]] && echo "Cancelled." && return 1
+      local repo_name
+      repo_name=$(basename "$(git rev-parse --show-toplevel)")
+      if [[ "$branch" == "[new branch]" ]]; then
+        printf "New branch name: "; read -r branch
+        [[ -z "$branch" ]] && echo "Cancelled." && return 1
+        local default_path="../${repo_name}-${branch}"
+        printf "Path [%s]: " "$default_path"; read -r wt_path
+        [[ -z "$wt_path" ]] && wt_path="$default_path"
+        git worktree add -b "$branch" "$wt_path"
+      else
+        local clean_branch="${branch#origin/}"
+        local default_path="../${repo_name}-${clean_branch}"
+        printf "Path [%s]: " "$default_path"; read -r wt_path
+        [[ -z "$wt_path" ]] && wt_path="$default_path"
+        git worktree add "$wt_path" "$branch"
+      fi
+      ;;
+
+    "WORKTREE_SWITCH")
+      local wt_line
+      wt_line=$(git worktree list | fzf --height=10 --reverse --no-info --prompt="Switch to worktree: ")
+      [[ -z "$wt_line" ]] && echo "Cancelled." && return 1
+      local wt_path
+      wt_path=$(echo "$wt_line" | awk '{print $1}')
+      cd "$wt_path" || { echo "Failed to cd to $wt_path"; return 1; }
+      echo "Switched to worktree: $wt_path"
+      ;;
+
+    "WORKTREE_REMOVE")
+      local wt_line
+      wt_line=$(git worktree list | tail -n +2 | fzf --height=10 --reverse --no-info --prompt="Remove worktree: ")
+      [[ -z "$wt_line" ]] && echo "Cancelled." && return 1
+      local wt_path wt_branch
+      wt_path=$(echo "$wt_line" | awk '{print $1}')
+      wt_branch=$(echo "$wt_line" | sed 's/.*\[//' | sed 's/\]//')
+      printf "Remove worktree '%s'? [y/N]: " "$wt_path"; read -r confirm
+      if [[ "$confirm" =~ ^[Yy]$ ]]; then
+        git worktree remove "$wt_path"
+        if [[ -n "$wt_branch" ]]; then
+          printf "Also delete branch '%s'? [y/N]: " "$wt_branch"; read -r del_branch
+          [[ "$del_branch" =~ ^[Yy]$ ]] && git branch -D "$wt_branch"
+        fi
+      else
+        echo "Cancelled."
+      fi
+      ;;
+
+    "WORKTREE_CLEANUP")
+      local wt_lines
+      wt_lines=$(git worktree list | tail -n +2)
+      if [[ -z "$wt_lines" ]]; then
+        echo "No worktrees to clean up (only main worktree exists)."
+        return 0
+      fi
+      local selected
+      selected=$(printf "%s\n" "[remove ALL]" "$wt_lines" \
+        | fzf --multi --height=15 --reverse --no-info --prompt="Select worktrees to remove: " \
+               --header="tab to multi-select · enter to confirm")
+      [[ -z "$selected" ]] && echo "Cancelled." && return 1
+      # Expand [remove ALL] to all non-main worktrees
+      if echo "$selected" | grep -q '^\[remove ALL\]$'; then
+        selected="$wt_lines"
+      fi
+      local count
+      count=$(echo "$selected" | grep -c .)
+      printf "Remove %d worktree(s)? [y/N]: " "$count"; read -r confirm
+      if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        echo "Cancelled."; return 1
+      fi
+      local branches=()
+      while IFS= read -r line; do
+        local wt_p wt_b
+        wt_p=$(echo "$line" | awk '{print $1}')
+        wt_b=$(echo "$line" | sed 's/.*\[//' | sed 's/\]//')
+        echo "Removing worktree: $wt_p"
+        git worktree remove "$wt_p" 2>&1
+        [[ -n "$wt_b" ]] && branches+=("$wt_b")
+      done <<< "$selected"
+      git worktree prune
+      if [[ ${#branches[@]} -gt 0 ]]; then
+        printf "Also delete associated branches? [y/N]: "; read -r del_branches
+        if [[ "$del_branches" =~ ^[Yy]$ ]]; then
+          for b in "${branches[@]}"; do
+            echo "Deleting branch: $b"
+            git branch -D "$b" 2>&1
+          done
+        fi
+      fi
+      echo "Cleanup complete."
       ;;
 
     "SQUASH_N")
