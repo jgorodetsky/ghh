@@ -3,7 +3,7 @@
 # https://github.com/jgorodetsky/ghh
 # MIT License
 
-GHH_VERSION="0.1.0"
+GHH_VERSION="0.2.0"
 
 # ---------------------------------------------------------------------------
 # Platform detection
