@@ -11,62 +11,68 @@ Set Padding 20
 Set Theme "Catppuccin Mocha"
 Set TypingSpeed 60ms
 
-# Source ghh silently and clear
+# Source ghh silently
 Hide
 Type "source bin/ghh && clear"
 Enter
 Sleep 1s
 Show
 
-# Scene 1: Launch ghh and search "diff"
+# Scene 1: Search "status" and run it
 Type "ghh"
-Sleep 600ms
+Sleep 500ms
 Enter
-Sleep 1.5s
-Type "diff"
+Sleep 1s
+Type "short status"
+Sleep 1s
+Enter
+Sleep 800ms
+# Default handler prompts "Run it? [Y/n/copy]" — confirm
+Enter
 Sleep 2s
 
-Escape
-Sleep 500ms
-
-# Scene 2: Search "worktree"
+# Scene 2: Search "log" and run the graph
 Type "ghh"
-Sleep 600ms
+Sleep 500ms
 Enter
-Sleep 1.5s
+Sleep 1s
+Type "commit graph"
+Sleep 1s
+Enter
+Sleep 800ms
+Enter
+Sleep 2s
+
+# Scene 3: Show worktree section
+Type "ghh"
+Sleep 500ms
+Enter
+Sleep 1s
 Type "worktree"
 Sleep 2s
-
 Escape
 Sleep 500ms
 
-# Scene 3: Search "tag"
+# Scene 4: Show tag section
 Type "ghh"
-Sleep 600ms
+Sleep 500ms
 Enter
-Sleep 1.5s
+Sleep 1s
 Type "tag"
 Sleep 2s
-
 Escape
 Sleep 500ms
 
-# Scene 4: Search "cherry"
-Type "ghh"
-Sleep 600ms
+# Scene 5: gc conventional commit flow
+Type "gc"
+Sleep 500ms
 Enter
 Sleep 1.5s
-Type "cherry"
-Sleep 2s
-
-Escape
-Sleep 500ms
-
-# Scene 5: Show gc
-Type "gc"
-Sleep 600ms
+# Pick "feat"
+Type "feat"
+Sleep 800ms
 Enter
-Sleep 2s
+Sleep 1.5s
 
 Escape
 Sleep 1s
