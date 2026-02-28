@@ -3,7 +3,7 @@
 # https://github.com/jgorodetsky/ghh
 # MIT License
 
-GHH_VERSION="0.2.0"
+GHH_VERSION="0.3.0"
 
 # ---------------------------------------------------------------------------
 # Platform detection
@@ -253,6 +253,11 @@ ghh() {
     "git log --oneline -15 @@ recent commits" \
     "git log --oneline --graph -20 @@ commit graph" \
     "BLAME_FILE @@ blame a file (pick)" \
+    "LOG_SEARCH_MSG @@ search commits by message" \
+    "LOG_SEARCH_CODE @@ search commits that changed a string" \
+    "LOG_SEARCH_AUTHOR @@ search commits by author" \
+    "CHERRY_PICK @@ cherry-pick a commit (pick)" \
+    "REFLOG_RECOVER @@ recover a lost commit from reflog" \
     "" \
     "── BRANCH ─────────────────────────────────────────────" \
     "CHECKOUT_BRANCH @@ switch branch (fuzzy)" \
@@ -368,6 +373,14 @@ ghh() {
     "gh search repos 'query' @@ search repos" \
     "gh search code 'query' @@ search code" \
     "gh api notifications @@ your notifications" \
+    "" \
+    "── TAGS & RELEASES ───────────────────────────────────" \
+    "git tag @@ list all tags" \
+    "TAG_CREATE @@ create a tag (annotated or lightweight)" \
+    "TAG_DELETE @@ delete a tag (pick)" \
+    "gh release list @@ list releases" \
+    "gh release create @@ create a release interactively" \
+    "RELEASE_VIEW @@ view a release (pick)" \
     | fzf --height=30 --reverse --no-info \
           --prompt="ghh > " \
           --header="type to search · enter to run · esc to cancel" \
@@ -584,6 +597,87 @@ ghh() {
         fi
       fi
       echo "Cleanup complete."
+      ;;
+
+    "LOG_SEARCH_MSG")
+      printf "Search commit messages for: "; read -r query
+      [[ -z "$query" ]] && echo "Cancelled." && return 1
+      git log --oneline --grep="$query"
+      ;;
+
+    "LOG_SEARCH_CODE")
+      printf "Search for string added/removed in code: "; read -r query
+      [[ -z "$query" ]] && echo "Cancelled." && return 1
+      git log --oneline -S "$query"
+      ;;
+
+    "LOG_SEARCH_AUTHOR")
+      printf "Search by author: "; read -r query
+      [[ -z "$query" ]] && echo "Cancelled." && return 1
+      git log --oneline --author="$query"
+      ;;
+
+    "CHERRY_PICK")
+      local commit
+      commit=$(git log --oneline --all -50 | fzf --height=15 --reverse --no-info --prompt="Cherry-pick commit: " | awk '{print $1}')
+      [[ -z "$commit" ]] && echo "Cancelled." && return 1
+      git cherry-pick "$commit"
+      ;;
+
+    "REFLOG_RECOVER")
+      local entry
+      entry=$(git reflog --format='%h %gd %gs (%cr)' -30 | fzf --height=15 --reverse --no-info --prompt="Recover entry: ")
+      [[ -z "$entry" ]] && echo "Cancelled." && return 1
+      local ref
+      ref=$(echo "$entry" | awk '{print $1}')
+      local action
+      action=$(printf "%s\n" "cherry-pick (apply commit to current branch)" "checkout (switch to that state)" \
+        | fzf --height=5 --reverse --no-info --prompt="Action: " | awk '{print $1}')
+      [[ -z "$action" ]] && echo "Cancelled." && return 1
+      case "$action" in
+        "cherry-pick") git cherry-pick "$ref" ;;
+        "checkout") git checkout "$ref" ;;
+      esac
+      ;;
+
+    "TAG_CREATE")
+      local tag_type
+      tag_type=$(printf "%s\n" "annotated (recommended — includes message)" "lightweight (just a pointer)" \
+        | fzf --height=5 --reverse --no-info --prompt="Tag type: " | awk '{print $1}')
+      [[ -z "$tag_type" ]] && echo "Cancelled." && return 1
+      printf "Tag name (e.g. v1.0.0): "; read -r tag_name
+      [[ -z "$tag_name" ]] && echo "Cancelled." && return 1
+      if [[ "$tag_type" == "annotated" ]]; then
+        printf "Tag message: "; read -r tag_msg
+        [[ -z "$tag_msg" ]] && echo "Cancelled." && return 1
+        git tag -a "$tag_name" -m "$tag_msg"
+      else
+        git tag "$tag_name"
+      fi
+      printf "Push tag to remote? [Y/n]: "; read -r push_confirm
+      [[ ! "$push_confirm" =~ ^[Nn]$ ]] && git push origin "$tag_name"
+      ;;
+
+    "TAG_DELETE")
+      local tag
+      tag=$(git tag --sort=-creatordate | fzf --height=15 --reverse --no-info --prompt="Delete tag: ")
+      [[ -z "$tag" ]] && echo "Cancelled." && return 1
+      printf "Delete tag '%s'? [y/N]: " "$tag"; read -r confirm
+      if [[ "$confirm" =~ ^[Yy]$ ]]; then
+        git tag -d "$tag"
+        printf "Also delete from remote? [y/N]: "; read -r remote_confirm
+        [[ "$remote_confirm" =~ ^[Yy]$ ]] && git push origin --delete "$tag"
+      else
+        echo "Cancelled."
+      fi
+      ;;
+
+    "RELEASE_VIEW")
+      _ghh_check_gh || return 1
+      local release
+      release=$(gh release list | fzf --height=15 --reverse --no-info --prompt="View release: " | awk '{print $1}')
+      [[ -z "$release" ]] && echo "Cancelled." && return 1
+      gh release view "$release"
       ;;
 
     "SQUASH_N")

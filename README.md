@@ -23,7 +23,7 @@ It also includes `gc` — an interactive conventional commit builder that walks 
 
 ## Features
 
-- **100+ commands** in one searchable menu — git, gh, PRs, CI, issues, branches, worktrees, stashes, diffs
+- **120+ commands** in one searchable menu — git, gh, PRs, CI, issues, branches, worktrees, tags, releases, stashes, diffs
 - **Interactive conventional commits** via `gc` — pick type, add scope, write message, confirm
 - **Smart chaining** — branch switching, stash picking, file blame, and PR checkout open secondary fzf pickers
 - **Drill into CI checks** — pick a failing check and open it directly in your browser
@@ -102,6 +102,10 @@ A searchable menu appears. Type what you're thinking:
 | "Merge this PR"          | `merge`      | Shows merge strategy options              |
 | "Work on another branch" | `worktree`   | Add, switch, remove, or bulk cleanup worktrees |
 | "Start fresh"            | `reset`      | Fetch and reset branch to match remote    |
+| "Find who changed this"  | `search`     | Search commits by message, code, or author |
+| "Apply that one commit"  | `cherry`     | Pick a commit from the log and cherry-pick |
+| "I lost a commit"        | `reflog`     | Browse reflog, recover via cherry-pick or checkout |
+| "Tag a release"          | `tag`        | Create, delete, or list tags              |
 | "Open in browser"        | `web`        | Opens PR/repo/issue in your browser       |
 
 For read-only commands (`git diff`, `git log`, `gh pr list`), ghh runs them directly. For commands that modify state, it shows the command and asks: **Run it? [Y/n/copy]**
@@ -128,7 +132,7 @@ Produces: `feat(auth): add OAuth2 login flow`
 | Section              | What's in it                                                        |
 | -------------------- | ------------------------------------------------------------------- |
 | **Stage & Commit**   | `git add`, interactive staging, stash, stash pop, stash picker, `gc` |
-| **Diff & Review**    | Unstaged/staged/branch diffs, log, graph, show, blame               |
+| **Diff & Review**    | Diffs, log, graph, blame, commit search (message/code/author), cherry-pick, reflog recovery |
 | **Branch**           | Switch, list, delete, push, pull, merge, reset to remote — with fzf pickers |
 | **Worktree**         | Add, switch, remove, bulk cleanup with branch deletion               |
 | **Rewrite History**  | Soft/hard reset, amend, squash, interactive rebase                   |
@@ -141,6 +145,7 @@ Produces: `feat(auth): add OAuth2 login flow`
 | **CI / Workflow Runs**| List, view, watch, rerun, download artifacts, cancel                |
 | **Issues**           | List, view, create, close, comment                                  |
 | **Repo & Search**    | Open in browser, clone, fork, search repos/code, notifications      |
+| **Tags & Releases** | List/create/delete tags, list/create/view releases                   |
 
 ---
 
