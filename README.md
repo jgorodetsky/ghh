@@ -23,7 +23,7 @@ It also includes `gc` — an interactive conventional commit builder that walks 
 
 ## Features
 
-- **100+ commands** in one searchable menu — git, gh, PRs, CI, issues, branches, stashes, diffs
+- **100+ commands** in one searchable menu — git, gh, PRs, CI, issues, branches, worktrees, stashes, diffs
 - **Interactive conventional commits** via `gc` — pick type, add scope, write message, confirm
 - **Smart chaining** — branch switching, stash picking, file blame, and PR checkout open secondary fzf pickers
 - **Drill into CI checks** — pick a failing check and open it directly in your browser
@@ -100,6 +100,8 @@ A searchable menu appears. Type what you're thinking:
 | "Undo last commit"       | `undo`       | Shows soft/hard reset options             |
 | "Blame this file"        | `blame`      | Opens a file picker, then runs blame      |
 | "Merge this PR"          | `merge`      | Shows merge strategy options              |
+| "Work on another branch" | `worktree`   | Add, switch, remove, or bulk cleanup worktrees |
+| "Start fresh"            | `reset`      | Fetch and reset branch to match remote    |
 | "Open in browser"        | `web`        | Opens PR/repo/issue in your browser       |
 
 For read-only commands (`git diff`, `git log`, `gh pr list`), ghh runs them directly. For commands that modify state, it shows the command and asks: **Run it? [Y/n/copy]**
@@ -127,7 +129,8 @@ Produces: `feat(auth): add OAuth2 login flow`
 | -------------------- | ------------------------------------------------------------------- |
 | **Stage & Commit**   | `git add`, interactive staging, stash, stash pop, stash picker, `gc` |
 | **Diff & Review**    | Unstaged/staged/branch diffs, log, graph, show, blame               |
-| **Branch**           | Switch, list, delete, push, pull, merge — with fzf pickers          |
+| **Branch**           | Switch, list, delete, push, pull, merge, reset to remote — with fzf pickers |
+| **Worktree**         | Add, switch, remove, bulk cleanup with branch deletion               |
 | **Rewrite History**  | Soft/hard reset, amend, squash, interactive rebase                   |
 | **Status & Info**    | Short status, remotes, email, branch name, full graph                |
 | **PR: Create & Edit**| Create (interactive/fill/draft), edit title/labels/reviewers, ready/draft/close |
