@@ -3,12 +3,11 @@
 # https://github.com/jgorodetsky/ghh
 # MIT License
 
-GHH_VERSION="0.3.0"
+GHH_VERSION="0.4.0"
 
 # ---------------------------------------------------------------------------
 # Platform detection
 # ---------------------------------------------------------------------------
-# Sets GHH_OPEN (browser opener) and GHH_COPY (clipboard copy) based on OS.
 
 _ghh_detect_platform() {
   case "$(uname -s)" in
@@ -59,19 +58,6 @@ _ghh_detect_platform
 _ghh_check_fzf() {
   if ! command -v fzf &>/dev/null; then
     echo "ghh: fzf is required but not installed."
-    case "$GHH_PLATFORM" in
-      macos) echo "  Install: brew install fzf" ;;
-      linux) echo "  Install: sudo apt install fzf  (or see https://github.com/junegunn/fzf#installation)" ;;
-      wsl)   echo "  Install: sudo apt install fzf" ;;
-    esac
-    return 1
-  fi
-  return 0
-}
-
-_ghh_check_git() {
-  if ! command -v git &>/dev/null; then
-    echo "ghh: git is required but not installed."
     return 1
   fi
   return 0
@@ -80,18 +66,13 @@ _ghh_check_git() {
 _ghh_check_gh() {
   if ! command -v gh &>/dev/null; then
     echo "ghh: gh (GitHub CLI) is required for GitHub commands."
-    case "$GHH_PLATFORM" in
-      macos) echo "  Install: brew install gh" ;;
-      linux) echo "  Install: see https://github.com/cli/cli/blob/trunk/docs/install_linux.md" ;;
-      wsl)   echo "  Install: see https://github.com/cli/cli/blob/trunk/docs/install_linux.md" ;;
-    esac
     return 1
   fi
   return 0
 }
 
 # ---------------------------------------------------------------------------
-# Utility: open URL cross-platform
+# Utilities
 # ---------------------------------------------------------------------------
 
 _ghh_open_url() {
@@ -103,13 +84,9 @@ _ghh_open_url() {
   fi
 }
 
-# ---------------------------------------------------------------------------
-# Utility: copy to clipboard cross-platform
-# ---------------------------------------------------------------------------
-
 _ghh_copy() {
   if [[ -n "$GHH_COPY" ]]; then
-    echo -n "$1" | eval "$GHH_COPY"
+    printf '%s' "$1" | eval "$GHH_COPY"
     echo "Copied to clipboard."
   else
     echo "Clipboard not available. Command:"
@@ -117,17 +94,90 @@ _ghh_copy() {
   fi
 }
 
-# ---------------------------------------------------------------------------
-# ghh-version — print version
-# ---------------------------------------------------------------------------
+# state dir for pick log + query history
+_ghh_state_dir() {
+  local d="${XDG_STATE_HOME:-$HOME/.local/state}/ghh"
+  mkdir -p "$d" 2>/dev/null
+  echo "$d"
+}
+
+# push a resolved command into the interactive shell's history so the
+# up-arrow recalls what ghh actually ran (works because ghh is sourced)
+_ghh_add_history() {
+  if [[ -n "${ZSH_VERSION:-}" ]]; then
+    [[ -o interactive ]] && print -s -- "$1"
+  elif [[ -n "${BASH_VERSION:-}" ]]; then
+    [[ $- == *i* ]] && history -s -- "$1"
+  fi
+  return 0
+} 2>/dev/null
+
+# single-quote a value for a rerunnable history line
+_ghh_sq() {
+  local q="'\\''"
+  local s="${1//\'/$q}"
+  printf "'%s'" "$s"
+}
+
+# record in shell history, then execute
+_ghh_run() {
+  _ghh_add_history "$1"
+  eval "$1"
+}
+
+# resolve a <token>: known types open a fuzzy picker, anything else is typed
+_ghh_fill_token() {
+  case "$1" in
+    branch)
+      git branch --sort=-committerdate --format='%(refname:short)' \
+        | fzf --height=15 --reverse --info=inline --prompt="$1: " \
+              --preview 'git log --oneline --color=always -8 {}'
+      ;;
+    commit)
+      git log --oneline --all -50 \
+        | fzf --height=15 --reverse --info=inline --prompt="$1: " \
+              --preview 'git show --color=always --stat {1}' \
+        | awk '{print $1}'
+      ;;
+    file)
+      git ls-files \
+        | fzf --height=15 --reverse --info=inline --prompt="$1: " \
+              --preview 'git log --oneline --color=always -5 -- {}'
+      ;;
+    tag)
+      git tag --sort=-creatordate \
+        | fzf --height=15 --reverse --info=inline --prompt="$1: "
+      ;;
+    pr)
+      _ghh_check_gh >&2 || return 1
+      gh pr list \
+        | fzf --height=15 --reverse --info=inline --prompt="$1: " \
+        | awk '{print $1}'
+      ;;
+    *)
+      local val
+      printf "%s: " "$1" >&2
+      read -r val
+      printf '%s' "$val"
+      ;;
+  esac
+}
+
+# resolve the repo's default branch instead of hardcoding main
+_ghh_default_branch() {
+  local b
+  b=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null)
+  b=${b#origin/}
+  [[ -n "$b" ]] && { echo "$b"; return; }
+  for b in main master develop; do
+    git show-ref -q --verify "refs/heads/$b" 2>/dev/null && { echo "$b"; return; }
+  done
+  echo main
+}
 
 ghh-version() {
   echo "ghh $GHH_VERSION"
 }
-
-# ---------------------------------------------------------------------------
-# ghh-update — pull latest from GitHub
-# ---------------------------------------------------------------------------
 
 ghh-update() {
   local install_dir="${GHH_DIR:-$HOME/.ghh}"
@@ -145,11 +195,31 @@ ghh-update() {
   fi
 }
 
+ghh-help() {
+  cat <<'EOF'
+ghh - your entire git + GitHub workflow in one searchable command
+
+usage:
+  ghh [query]      open the command menu, optionally pre-filtered (e.g. ghh squash)
+  gc               conventional commit builder (requires staged changes)
+  ghh --version    print version
+  ghh-update       pull the latest version
+
+risk tiers shown in the preview pane:
+  RO   read-only    runs instantly, no prompt
+  MUT  mutating     shows the command, asks Run it? [Y/n/copy]
+  DGR  destructive  requires typing 'yes'; anything else cancels
+  PICK guided       opens a follow-up picker or prompt
+
+extras:
+  custom commands   ~/.config/ghh/commands.local  (lines: "cmd @@ description")
+  recent + history  ~/.local/state/ghh/  (RECENT menu section, ctrl-p in query)
+EOF
+}
+
 # ---------------------------------------------------------------------------
-# gc — Interactive conventional commit
+# gc — Interactive conventional commit (fails fast, keeps context on screen)
 # ---------------------------------------------------------------------------
-# Walks you through building a conventional commit message with fzf.
-# Does NOT run git add — you stage files yourself first.
 
 gc() {
   if ! git rev-parse --is-inside-work-tree &>/dev/null; then
@@ -157,7 +227,17 @@ gc() {
   fi
   _ghh_check_fzf || return 1
 
-  # Step 1: pick commit type
+  # check for staged changes BEFORE walking through four prompts
+  if git diff --cached --quiet 2>/dev/null; then
+    echo "Nothing staged - stage files first (try: ghh stage)."
+    return 1
+  fi
+
+  # show what's being committed instead of clearing the screen
+  echo "Committing:"
+  git diff --cached --stat | sed 's/^/  /'
+  echo ""
+
   local type
   type=$(printf "%s\n" \
     "feat     -- A new feature" \
@@ -171,311 +251,414 @@ gc() {
     "ci       -- CI configuration changes" \
     "chore    -- Other changes (no src/test)" \
     "revert   -- Reverts a previous commit" \
-    | fzf --height=14 --reverse --no-info --prompt="Select commit type: " \
+    | fzf --height=14 --reverse --info=inline --prompt="Select commit type: " \
     | awk '{print $1}')
   [[ -z "$type" ]] && echo "Cancelled." && return 1
 
-  clear
-  echo "------------------------------------"
-  echo "  Type: $type"
-  echo "------------------------------------"
-
-  # Step 2: optional scope
-  printf "\nScope (optional, enter to skip): "
+  printf "Scope (optional, enter to skip): "
   read -r scope
 
-  clear
   local header="$type"
   [[ -n "$scope" ]] && header="$type($scope)"
 
-  echo "------------------------------------"
-  echo "  Building: $header: ..."
-  echo "------------------------------------"
-
-  # Step 3: commit message
-  printf "\nType your commit message: "
+  printf "Message (%s: ...): " "$header"
   read -r message
   [[ -z "$message" ]] && echo "No message. Cancelled." && return 1
 
   local full_message="$header: $message"
 
-  # Step 4: preview and confirm
-  clear
-  echo "------------------------------------"
-  echo "  Preview"
-  echo "------------------------------------"
   echo ""
   echo "  $full_message"
-  echo ""
   printf "Confirm? [Y/n]: "
   read -r confirm
   [[ "$confirm" =~ ^[Nn]$ ]] && echo "Cancelled." && return 1
 
-  git commit -m "$full_message"
+  _ghh_run "git commit -m $(_ghh_sq "$full_message")"
+}
+
+# ---------------------------------------------------------------------------
+# Command registry (A1)
+# ---------------------------------------------------------------------------
+# Format: RISK @@ COMMAND @@ DESCRIPTION
+#   RO=read-only  MUT=mutating  DGR=destructive  PICK=guided  HDR=section header
+# <tokens> in commands are prompted for before running.
+# $1 = resolved default branch.
+
+_ghh_menu() {
+  local def="$1"
+  printf "%s\n" \
+    "HDR @@ ── STAGE & COMMIT ─────────────────────────────────────" \
+    "PICK @@ gc @@ conventional commit (interactive)" \
+    "MUT @@ git add . @@ stage all changes" \
+    "PICK @@ STAGE_FILES @@ stage specific files (pick)" \
+    "MUT @@ git add -p @@ stage specific hunks interactively" \
+    "MUT @@ git stash @@ stash current changes" \
+    "MUT @@ git stash pop @@ pop last stash" \
+    "PICK @@ PICK_STASH @@ pick a stash to apply" \
+    "HDR @@ ── DIFF & REVIEW ──────────────────────────────────────" \
+    "RO @@ git diff @@ unstaged changes" \
+    "RO @@ git diff --staged @@ staged changes" \
+    "PICK @@ DIFF_BUILDER @@ build any diff: what vs what, pick format" \
+    "RO @@ git diff $def @@ compare branch vs $def" \
+    "RO @@ git diff --name-only $def @@ changed filenames vs $def" \
+    "RO @@ git diff HEAD~1 HEAD @@ last commit diff" \
+    "RO @@ git diff --name-only HEAD~1 HEAD @@ last commit files only" \
+    "RO @@ git show HEAD @@ show last commit in full" \
+    "RO @@ git show <commit> @@ show any commit (pick)" \
+    "RO @@ git log --oneline -15 @@ recent commits" \
+    "RO @@ git log --oneline --graph -20 @@ commit graph" \
+    "PICK @@ BLAME_FILE @@ blame a file (pick)" \
+    "PICK @@ LOG_SEARCH_MSG @@ search commits by message" \
+    "PICK @@ LOG_SEARCH_CODE @@ search commits that changed a string" \
+    "PICK @@ LOG_SEARCH_AUTHOR @@ search commits by author" \
+    "PICK @@ CHERRY_PICK @@ cherry-pick a commit (pick)" \
+    "PICK @@ REFLOG_RECOVER @@ recover a lost commit from reflog" \
+    "HDR @@ ── BRANCH ─────────────────────────────────────────────" \
+    "PICK @@ CHECKOUT_BRANCH @@ switch branch (fuzzy)" \
+    "RO @@ git branch -a @@ list all branches" \
+    "PICK @@ DELETE_BRANCH @@ delete a branch (pick)" \
+    "MUT @@ git pull --rebase @@ pull with rebase" \
+    "MUT @@ git pull --rebase && git push @@ pull rebase then push" \
+    "MUT @@ git push @@ push current branch" \
+    "MUT @@ git push -u origin HEAD @@ push & set upstream" \
+    "PICK @@ MERGE_BRANCH @@ merge a branch (pick)" \
+    "PICK @@ RESET_TO_REMOTE @@ reset current branch to match remote" \
+    "HDR @@ ── WORKTREE ───────────────────────────────────────────" \
+    "PICK @@ WORKTREE_ADD @@ add a new worktree (pick branch)" \
+    "PICK @@ WORKTREE_SWITCH @@ switch to a worktree (cd)" \
+    "RO @@ git worktree list @@ list all worktrees" \
+    "PICK @@ WORKTREE_REMOVE @@ remove a worktree (pick)" \
+    "PICK @@ WORKTREE_CLEANUP @@ bulk remove worktrees + branches" \
+    "MUT @@ git worktree prune @@ clean up stale worktree refs" \
+    "HDR @@ ── REWRITE HISTORY ────────────────────────────────────" \
+    "MUT @@ git reset HEAD~1 --soft @@ undo last commit (keep changes)" \
+    "DGR @@ git reset HEAD~1 --hard @@ undo last commit (destroy)" \
+    "DGR @@ git checkout -- . @@ discard all unstaged changes" \
+    "MUT @@ git commit --amend --no-edit @@ amend last commit (keep msg)" \
+    "MUT @@ git commit --amend @@ amend last commit (edit msg)" \
+    "PICK @@ SQUASH_N @@ squash last N commits" \
+    "PICK @@ REBASE_N @@ interactive rebase last N" \
+    "HDR @@ ── STATUS & INFO ──────────────────────────────────────" \
+    "RO @@ git status @@ full status (verbose)" \
+    "RO @@ git status -sb @@ short status" \
+    "RO @@ git remote -v @@ show remotes" \
+    "RO @@ git config user.email @@ show git email" \
+    "RO @@ git rev-parse --abbrev-ref HEAD @@ current branch name" \
+    "RO @@ git log --oneline --all --graph @@ full repo graph" \
+    "HDR @@ ── PR: CREATE & EDIT ──────────────────────────────────" \
+    "MUT @@ gh pr create @@ create PR interactively" \
+    "MUT @@ gh pr create --fill @@ create PR from commit msgs" \
+    "MUT @@ gh pr create --draft @@ create as draft" \
+    "MUT @@ gh pr create --title <title> --body <body> @@ create with title and body" \
+    "MUT @@ gh pr edit --title <title> @@ edit PR title" \
+    "MUT @@ gh pr edit --add-label <label> @@ add label" \
+    "MUT @@ gh pr edit --add-reviewer <user> @@ add reviewer" \
+    "MUT @@ gh pr edit --add-assignee @me @@ assign yourself" \
+    "MUT @@ gh pr ready @@ mark ready for review" \
+    "MUT @@ gh pr ready --undo @@ convert to draft" \
+    "MUT @@ gh pr close @@ close PR" \
+    "MUT @@ gh pr reopen @@ reopen PR" \
+    "HDR @@ ── PR: VIEW & REVIEW ─────────────────────────────────" \
+    "RO @@ gh pr list @@ list open PRs" \
+    "RO @@ gh pr list --author @me @@ list my PRs" \
+    "RO @@ gh pr list --search review-requested:@me @@ PRs needing my review" \
+    "RO @@ gh pr list --state merged @@ list merged PRs" \
+    "RO @@ gh pr list --label <label> @@ list PRs with label" \
+    "RO @@ gh pr view @@ view current PR details" \
+    "RO @@ gh pr view <pr> @@ view a PR (pick)" \
+    "RO @@ gh pr view --web @@ open in browser" \
+    "RO @@ gh pr view --comments @@ show all comments" \
+    "RO @@ gh pr diff @@ show PR diff" \
+    "RO @@ gh pr diff <pr> @@ diff a PR (pick)" \
+    "PICK @@ PR_CHECKOUT @@ checkout a PR locally (pick)" \
+    "HDR @@ ── PR: CHECKS & CI ────────────────────────────────────" \
+    "RO @@ gh pr checks @@ show CI status" \
+    "RO @@ gh pr checks --watch @@ watch until checks complete" \
+    "RO @@ gh pr checks --required @@ show only required checks" \
+    "PICK @@ DEEP_CHECKS @@ drill into a specific check" \
+    "HDR @@ ── PR: MERGE ──────────────────────────────────────────" \
+    "MUT @@ gh pr merge --squash @@ squash merge" \
+    "MUT @@ gh pr merge --squash --auto @@ auto-merge when checks pass" \
+    "MUT @@ gh pr merge --squash --delete-branch @@ squash merge & delete branch" \
+    "MUT @@ gh pr merge --rebase @@ rebase merge" \
+    "MUT @@ gh pr merge --merge @@ merge commit" \
+    "MUT @@ gh pr merge --delete-branch @@ merge and delete branch" \
+    "HDR @@ ── PR: FEEDBACK ───────────────────────────────────────" \
+    "MUT @@ gh pr review --approve @@ approve PR" \
+    "MUT @@ gh pr review --approve -b <comment> @@ approve with comment" \
+    "MUT @@ gh pr review --request-changes @@ request changes" \
+    "MUT @@ gh pr review --comment -b <comment> @@ leave review comment" \
+    "PICK @@ PR_COMMENT @@ comment on PR (type msg)" \
+    "HDR @@ ── CI / WORKFLOW RUNS ─────────────────────────────────" \
+    "RO @@ gh run list @@ list recent runs" \
+    "RO @@ gh run list --status failure @@ list failed runs" \
+    "RO @@ gh run list --branch $def @@ runs on $def" \
+    "RO @@ gh run view @@ view latest run" \
+    "RO @@ gh run view --log-failed @@ only failed step logs" \
+    "RO @@ gh run view --web @@ open run in browser" \
+    "RO @@ gh run watch @@ live stream current run" \
+    "MUT @@ gh run rerun --failed @@ rerun only failed jobs" \
+    "MUT @@ gh run rerun @@ rerun latest run" \
+    "MUT @@ gh run download @@ download artifacts" \
+    "MUT @@ gh run cancel @@ cancel in-progress run" \
+    "HDR @@ ── ISSUES ─────────────────────────────────────────────" \
+    "RO @@ gh issue list @@ list open issues" \
+    "RO @@ gh issue list --assignee @me @@ my issues" \
+    "RO @@ gh issue list --label <label> @@ issues with label" \
+    "RO @@ gh issue view --web @@ open issue in browser" \
+    "MUT @@ gh issue create @@ create interactively" \
+    "MUT @@ gh issue close @@ close issue" \
+    "MUT @@ gh issue comment --body <msg> @@ comment on issue" \
+    "HDR @@ ── REPO & SEARCH ─────────────────────────────────────" \
+    "RO @@ gh repo view --web @@ open repo in browser" \
+    "MUT @@ gh repo clone <owner/repo> @@ clone a repo" \
+    "MUT @@ gh repo fork @@ fork current repo" \
+    "RO @@ gh search repos <query> @@ search repos" \
+    "RO @@ gh search code <query> @@ search code" \
+    "RO @@ gh api notifications @@ your notifications" \
+    "HDR @@ ── TAGS & RELEASES ───────────────────────────────────" \
+    "RO @@ git tag @@ list all tags" \
+    "PICK @@ TAG_CREATE @@ create a tag (annotated or lightweight)" \
+    "PICK @@ TAG_DELETE @@ delete a tag (pick)" \
+    "RO @@ gh release list @@ list releases" \
+    "MUT @@ gh release create @@ create a release interactively" \
+    "PICK @@ RELEASE_VIEW @@ view a release (pick)"
 }
 
 # ---------------------------------------------------------------------------
 # ghh — The main command center
 # ---------------------------------------------------------------------------
-# A single searchable menu of 100+ git and gh commands.
-# Type what you're thinking, pick a command, run it.
 
 ghh() {
   _ghh_check_fzf || return 1
 
-  # -------------------------------------------------------------------------
-  # Command definitions
-  # -------------------------------------------------------------------------
-  # Format: COMMAND @@ description
-  # The @@ delimiter separates the executable command from its description.
-  # fzf displays the full line; we extract the command from before @@.
-  # Lines starting with "──" are section headers (non-selectable).
+  # flags
+  case "${1:-}" in
+    -v|--version) ghh-version; return 0 ;;
+    -h|--help)    ghh-help;    return 0 ;;
+  esac
 
+  local def state
+  def=$(_ghh_default_branch)
+  state=$(_ghh_state_dir)
+
+  local menu
+  menu=$(_ghh_menu "$def")
+
+  # user-defined commands from ~/.config/ghh/commands.local
+  local custom="${XDG_CONFIG_HOME:-$HOME/.config}/ghh/commands.local"
+  if [[ -f "$custom" ]] && grep -q ' @@ ' "$custom" 2>/dev/null; then
+    menu+=$'\n'"HDR @@ ── CUSTOM ────────────────────────────────────────────"
+    menu+=$'\n'"$(awk '/ @@ /{print "MUT @@ " $0}' "$custom")"
+  fi
+
+  # RECENT section from the pick log (top 5 by use count)
+  local picks="$state/picks"
+  if [[ -s "$picks" ]]; then
+    local rlines="" c line
+    while IFS= read -r c; do
+      [[ -z "$c" ]] && continue
+      line=$(printf '%s\n' "$menu" | grep -F -m1 " @@ $c @@ ")
+      [[ -n "$line" ]] && rlines+="$line"$'\n'
+    done < <(awk '{c[$0]++; l[$0]=NR} END {for (k in c) printf "%d\t%d\t%s\n", c[k], l[k], k}' "$picks" \
+      | sort -t$'\t' -k1,1rn -k2,2rn | head -5 | cut -f3-)
+    if [[ -n "$rlines" ]]; then
+      menu="HDR @@ ── RECENT ─────────────────────────────────────────────"$'\n'"${rlines%$'\n'}"$'\n'"$menu"
+    fi
+  fi
+
+  # query pre-fill · preview pane · tier shown · query history · match counter
   local selection
-  selection=$(printf "%s\n" \
-    "── STAGE & COMMIT ─────────────────────────────────────" \
-    "gc @@ conventional commit (interactive)" \
-    "git add . @@ stage all changes" \
-    "STAGE_FILES @@ stage specific files (pick)" \
-    "git add -p @@ stage specific hunks interactively" \
-    "git stash @@ stash current changes" \
-    "git stash pop @@ pop last stash" \
-    "PICK_STASH @@ pick a stash to apply" \
-    "" \
-    "── DIFF & REVIEW ──────────────────────────────────────" \
-    "git diff @@ unstaged changes" \
-    "git diff --staged @@ staged changes" \
-    "git diff main @@ compare branch vs main" \
-    "git diff --name-only main @@ changed filenames vs main" \
-    "git diff HEAD~1 HEAD @@ last commit diff" \
-    "git diff --name-only HEAD~1 HEAD @@ last commit files only" \
-    "git show HEAD @@ show last commit in full" \
-    "git log --oneline -15 @@ recent commits" \
-    "git log --oneline --graph -20 @@ commit graph" \
-    "BLAME_FILE @@ blame a file (pick)" \
-    "LOG_SEARCH_MSG @@ search commits by message" \
-    "LOG_SEARCH_CODE @@ search commits that changed a string" \
-    "LOG_SEARCH_AUTHOR @@ search commits by author" \
-    "CHERRY_PICK @@ cherry-pick a commit (pick)" \
-    "REFLOG_RECOVER @@ recover a lost commit from reflog" \
-    "" \
-    "── BRANCH ─────────────────────────────────────────────" \
-    "CHECKOUT_BRANCH @@ switch branch (fuzzy)" \
-    "git branch -a @@ list all branches" \
-    "DELETE_BRANCH @@ delete a branch (pick)" \
-    "git pull --rebase @@ pull with rebase" \
-    "git pull --rebase && git push @@ pull rebase then push" \
-    "git push @@ push current branch" \
-    "git push -u origin HEAD @@ push & set upstream" \
-    "MERGE_BRANCH @@ merge a branch (pick)" \
-    "RESET_TO_REMOTE @@ reset current branch to match remote" \
-    "" \
-    "── WORKTREE ───────────────────────────────────────────" \
-    "WORKTREE_ADD @@ add a new worktree (pick branch)" \
-    "WORKTREE_SWITCH @@ switch to a worktree (cd)" \
-    "git worktree list @@ list all worktrees" \
-    "WORKTREE_REMOVE @@ remove a worktree (pick)" \
-    "WORKTREE_CLEANUP @@ bulk remove worktrees + branches" \
-    "git worktree prune @@ clean up stale worktree refs" \
-    "" \
-    "── REWRITE HISTORY ────────────────────────────────────" \
-    "git reset HEAD~1 --soft @@ undo last commit (keep changes)" \
-    "git reset HEAD~1 --hard @@ undo last commit (destroy)" \
-    "git checkout -- . @@ discard all unstaged changes" \
-    "git commit --amend --no-edit @@ amend last commit (keep msg)" \
-    "git commit --amend @@ amend last commit (edit msg)" \
-    "SQUASH_N @@ squash last N commits" \
-    "REBASE_N @@ interactive rebase last N" \
-    "" \
-    "── STATUS & INFO ──────────────────────────────────────" \
-    "git status @@ full status (verbose)" \
-    "git status -sb @@ short status" \
-    "git remote -v @@ show remotes" \
-    "git config user.email @@ show git email" \
-    "git rev-parse --abbrev-ref HEAD @@ current branch name" \
-    "git log --oneline --all --graph @@ full repo graph" \
-    "" \
-    "── PR: CREATE & EDIT ──────────────────────────────────" \
-    "gh pr create @@ create PR interactively" \
-    "gh pr create --fill @@ create PR from commit msgs" \
-    "gh pr create --draft @@ create as draft" \
-    "gh pr create --title X --body Y @@ create with title and body" \
-    "gh pr edit --title 'new title' @@ edit PR title" \
-    "gh pr edit --add-label bug @@ add label" \
-    "gh pr edit --add-reviewer user @@ add reviewer" \
-    "gh pr edit --add-assignee @me @@ assign yourself" \
-    "gh pr ready @@ mark ready for review" \
-    "gh pr ready --undo @@ convert to draft" \
-    "gh pr close @@ close PR" \
-    "gh pr reopen @@ reopen PR" \
-    "" \
-    "── PR: VIEW & REVIEW ─────────────────────────────────" \
-    "gh pr list @@ list open PRs" \
-    "gh pr list --author @me @@ list my PRs" \
-    "gh pr list --search review-requested:@me @@ PRs needing my review" \
-    "gh pr list --state merged @@ list merged PRs" \
-    "gh pr list --label bug @@ list PRs with label" \
-    "gh pr view @@ view current PR details" \
-    "gh pr view 123 @@ view PR #123" \
-    "gh pr view --web @@ open in browser" \
-    "gh pr view --comments @@ show all comments" \
-    "gh pr diff @@ show PR diff" \
-    "gh pr diff 123 @@ diff for PR #123" \
-    "PR_CHECKOUT @@ checkout a PR locally (pick)" \
-    "" \
-    "── PR: CHECKS & CI ────────────────────────────────────" \
-    "gh pr checks @@ show CI status" \
-    "gh pr checks --watch @@ watch until checks complete" \
-    "gh pr checks --required @@ show only required checks" \
-    "DEEP_CHECKS @@ drill into a specific check" \
-    "" \
-    "── PR: MERGE ──────────────────────────────────────────" \
-    "gh pr merge --squash @@ squash merge" \
-    "gh pr merge --squash --auto @@ auto-merge when checks pass" \
-    "gh pr merge --squash --delete-branch @@ squash merge & delete branch" \
-    "gh pr merge --rebase @@ rebase merge" \
-    "gh pr merge --merge @@ merge commit" \
-    "gh pr merge --delete-branch @@ merge and delete branch" \
-    "" \
-    "── PR: FEEDBACK ───────────────────────────────────────" \
-    "gh pr review --approve @@ approve PR" \
-    "gh pr review --approve -b 'lgtm' @@ approve with comment" \
-    "gh pr review --request-changes @@ request changes" \
-    "gh pr review --comment -b 'msg' @@ leave review comment" \
-    "PR_COMMENT @@ comment on PR (type msg)" \
-    "" \
-    "── CI / WORKFLOW RUNS ─────────────────────────────────" \
-    "gh run list @@ list recent runs" \
-    "gh run list --status failure @@ list failed runs" \
-    "gh run list --branch main @@ runs on main" \
-    "gh run view @@ view latest run" \
-    "gh run view --log-failed @@ only failed step logs" \
-    "gh run view --web @@ open run in browser" \
-    "gh run watch @@ live stream current run" \
-    "gh run rerun --failed @@ rerun only failed jobs" \
-    "gh run rerun @@ rerun latest run" \
-    "gh run download @@ download artifacts" \
-    "gh run cancel @@ cancel in-progress run" \
-    "" \
-    "── ISSUES ─────────────────────────────────────────────" \
-    "gh issue list @@ list open issues" \
-    "gh issue list --assignee @me @@ my issues" \
-    "gh issue list --label bug @@ issues with label" \
-    "gh issue view --web @@ open issue in browser" \
-    "gh issue create @@ create interactively" \
-    "gh issue close @@ close issue" \
-    "gh issue comment --body 'msg' @@ comment on issue" \
-    "" \
-    "── REPO & SEARCH ─────────────────────────────────────" \
-    "gh repo view --web @@ open repo in browser" \
-    "gh repo clone owner/repo @@ clone a repo" \
-    "gh repo fork @@ fork current repo" \
-    "gh search repos 'query' @@ search repos" \
-    "gh search code 'query' @@ search code" \
-    "gh api notifications @@ your notifications" \
-    "" \
-    "── TAGS & RELEASES ───────────────────────────────────" \
-    "git tag @@ list all tags" \
-    "TAG_CREATE @@ create a tag (annotated or lightweight)" \
-    "TAG_DELETE @@ delete a tag (pick)" \
-    "gh release list @@ list releases" \
-    "gh release create @@ create a release interactively" \
-    "RELEASE_VIEW @@ view a release (pick)" \
-    | fzf --height=30 --reverse --no-info \
-          --prompt="ghh > " \
-          --header="type to search · enter to run · esc to cancel" \
-    )
+  selection=$(printf '%s\n' "$menu" | fzf \
+    --height=32 --reverse --info=inline \
+    --delimiter=' @@ ' --with-nth=2.. --nth=2,3 \
+    --query="$*" \
+    --history="$state/history" \
+    --prompt="ghh > " \
+    --header="RO runs instantly · MUT confirms · DGR needs 'yes' · PICK guided" \
+    --preview 'printf "$ %s\n\n%s\n\ntier: %s\n" {2} {3} {1}' \
+    --preview-window=down,5,wrap)
 
-  # Exit on empty selection, section headers, or blank lines
-  [[ -z "$selection" || "$selection" == ──* || "$selection" == "" ]] && return 0
+  [[ -z "$selection" ]] && return 0
 
-  # -------------------------------------------------------------------------
-  # Extract the command from before the @@ delimiter
-  # -------------------------------------------------------------------------
-  local actual_cmd
-  actual_cmd=$(echo "$selection" | sed 's/ *@@.*//')
+  local risk="${selection%% @@ *}"
+  local rest="${selection#* @@ }"
+  local actual_cmd="${rest%% @@ *}"
 
-  # -------------------------------------------------------------------------
-  # Handle special interactive commands
-  # -------------------------------------------------------------------------
+  [[ "$risk" == "HDR" ]] && return 0
+
+  # log the pick (by command) for the RECENT section
+  echo "$actual_cmd" >> "$picks" 2>/dev/null
+
+  # fill <token> placeholders before anything runs.
+  # Known token types (<branch> <commit> <file> <tag> <pr>) open fuzzy pickers;
+  # anything else is typed. Values are quoted with %q.
+  if [[ "$risk" != "PICK" ]]; then
+    local tok val q
+    while [[ "$actual_cmd" == *"<"*">"* ]]; do
+      tok="${actual_cmd#*<}"; tok="${tok%%>*}"
+      val=$(_ghh_fill_token "$tok") || { echo "Cancelled."; return 1; }
+      [[ -z "$val" ]] && echo "Cancelled." && return 1
+      printf -v q '%q' "$val"
+      actual_cmd="${actual_cmd//"<$tok>"/$q}"
+    done
+  fi
+
   case "$actual_cmd" in
 
     "gc")
       gc
       ;;
 
+    "DIFF_BUILDER")
+      # guided diff: FROM (old side) -> TO (new side) -> format
+      local old new fmt_line fmt cmd
+      old=$(printf "%s\n" "staged (index)" "HEAD" "HEAD~1" "HEAD~2" "HEAD~3" \
+        $(git branch --sort=-committerdate --format='%(refname:short)') \
+        $(git tag --sort=-creatordate) \
+        "pick a commit..." \
+        | fzf --height=18 --reverse --info=inline --prompt="diff FROM (old side): " \
+              --preview 'git log --oneline --color=always -6 {} 2>/dev/null')
+      [[ -z "$old" ]] && echo "Cancelled." && return 1
+      if [[ "$old" == "pick a commit..." ]]; then
+        old=$(git log --oneline --all -50 \
+          | fzf --height=15 --reverse --info=inline --prompt="FROM commit: " \
+                --preview 'git show --color=always --stat {1}' \
+          | awk '{print $1}')
+        [[ -z "$old" ]] && echo "Cancelled." && return 1
+      fi
+      new=$(printf "%s\n" "working tree" "staged (index)" "HEAD" \
+        $(git branch --sort=-committerdate --format='%(refname:short)') \
+        $(git tag --sort=-creatordate) \
+        "pick a commit..." \
+        | fzf --height=18 --reverse --info=inline --prompt="diff TO (new side): " \
+              --preview 'git log --oneline --color=always -6 {} 2>/dev/null')
+      [[ -z "$new" ]] && echo "Cancelled." && return 1
+      if [[ "$new" == "pick a commit..." ]]; then
+        new=$(git log --oneline --all -50 \
+          | fzf --height=15 --reverse --info=inline --prompt="TO commit: " \
+                --preview 'git show --color=always --stat {1}' \
+          | awk '{print $1}')
+        [[ -z "$new" ]] && echo "Cancelled." && return 1
+      fi
+      fmt_line=$(printf "%s\n" "full patch" "--stat" "--name-only" "--name-status" "--word-diff" \
+        | fzf --height=8 --reverse --info=inline --prompt="format: ")
+      [[ -z "$fmt_line" ]] && echo "Cancelled." && return 1
+      fmt=""
+      [[ "$fmt_line" != "full patch" ]] && fmt="$fmt_line"
+      cmd="git diff"
+      [[ -n "$fmt" ]] && cmd+=" $fmt"
+      if [[ "$new" == "working tree" ]]; then
+        if [[ "$old" == "staged (index)" ]]; then
+          : # git diff alone: staged vs working tree is what plain diff shows per-file
+        else
+          cmd+=" $old"
+        fi
+      elif [[ "$new" == "staged (index)" ]]; then
+        [[ "$old" == "staged (index)" ]] && { echo "Same on both sides."; return 1; }
+        cmd+=" --staged $old"
+      else
+        if [[ "$old" == "staged (index)" ]]; then
+          cmd+=" --staged $new"
+        else
+          cmd+=" $old $new"
+        fi
+      fi
+      echo "-> $cmd"
+      _ghh_run "$cmd"
+      ;;
+
     "STAGE_FILES")
       local files
       files=$({ git diff --name-only 2>/dev/null; git ls-files --others --exclude-standard 2>/dev/null; } \
-        | sort -u | fzf --multi --height=15 --reverse --no-info --prompt="Stage files: ")
+        | sort -u | fzf --multi --height=15 --reverse --info=inline --prompt="Stage files: " \
+            --header="tab to multi-select" \
+            --preview 'git diff --color=always -- {} | grep -q . && git diff --color=always -- {} || head -80 {} 2>/dev/null')
       [[ -z "$files" ]] && echo "Cancelled." && return 1
-      echo "$files" | xargs git add
-      echo "Staged."
+      # NUL-delimit so filenames with spaces survive
+      echo "$files" | tr '\n' '\0' | xargs -0 git add
+      local hist="git add" f
+      while IFS= read -r f; do hist+=" $(_ghh_sq "$f")"; done <<< "$files"
+      _ghh_add_history "$hist"
+      echo "Staged:"
+      git diff --cached --name-only | sed 's/^/  /'
       ;;
 
     "PICK_STASH")
       local stash
-      stash=$(git stash list | fzf --height=10 --reverse --no-info --prompt="Pick stash: " | cut -d: -f1)
+      stash=$(git stash list | fzf --height=12 --reverse --info=inline --prompt="Pick stash: " \
+        -d: --preview 'git stash show --color=always -p {1} | head -200' \
+        | cut -d: -f1)
       [[ -z "$stash" ]] && echo "Cancelled." && return 1
-      git stash apply "$stash"
+      _ghh_run "git stash apply $(_ghh_sq "$stash")"
       ;;
 
     "BLAME_FILE")
       local file
-      file=$(git ls-files | fzf --height=15 --reverse --no-info --prompt="Blame file: ")
+      file=$(git ls-files | fzf --height=15 --reverse --info=inline --prompt="Blame file: " \
+        --preview 'git log --oneline --color=always -8 -- {}')
       [[ -z "$file" ]] && echo "Cancelled." && return 1
-      git blame "$file"
+      _ghh_run "git blame $(_ghh_sq "$file")"
       ;;
 
     "CHECKOUT_BRANCH")
+      # --format gives clean names (no * or + markers)
       local branch
-      branch=$(git branch --sort=-committerdate | sed 's/^[* ]*//' | fzf --height=15 --reverse --no-info --prompt="Switch to: ")
+      branch=$(git branch --sort=-committerdate --format='%(refname:short)' \
+        | fzf --height=15 --reverse --info=inline --prompt="Switch to: " --ansi \
+            --preview 'git log --oneline --color=always --decorate -12 {}')
       [[ -z "$branch" ]] && echo "Cancelled." && return 1
-      git checkout "$branch"
+      if git switch "$branch" 2>/dev/null || git checkout "$branch"; then
+        _ghh_add_history "git switch $branch"
+      fi
       ;;
 
     "DELETE_BRANCH")
-      local branch
-      branch=$(git branch | sed 's/^[* ]*//' | fzf --height=15 --reverse --no-info --prompt="Delete branch: ")
+      local cur branch
+      cur=$(git branch --show-current)
+      branch=$(git branch --sort=-committerdate --format='%(refname:short)' \
+        | grep -vFx "$cur" \
+        | fzf --height=15 --reverse --info=inline --prompt="Delete branch: " \
+            --preview 'git log --oneline --color=always -12 {}')
       [[ -z "$branch" ]] && echo "Cancelled." && return 1
       printf "Delete '%s'? [y/N]: " "$branch"; read -r confirm
-      [[ "$confirm" =~ ^[Yy]$ ]] && git branch -d "$branch" || echo "Cancelled."
+      if [[ "$confirm" =~ ^[Yy]$ ]]; then
+        if git branch -d "$branch" 2>/dev/null; then
+          _ghh_add_history "git branch -d $branch"
+        else
+          printf "Not fully merged (or in use). Force delete with -D? [y/N]: "
+          read -r force
+          if [[ "$force" =~ ^[Yy]$ ]]; then
+            git branch -D "$branch" && _ghh_add_history "git branch -D $branch"
+          else
+            echo "Kept '$branch'."
+          fi
+        fi
+      else
+        echo "Cancelled."
+      fi
       ;;
 
     "MERGE_BRANCH")
       local branch
-      branch=$(git branch | sed 's/^[* ]*//' | fzf --height=15 --reverse --no-info --prompt="Merge branch: ")
+      branch=$(git branch --sort=-committerdate --format='%(refname:short)' \
+        | grep -vFx "$(git branch --show-current)" \
+        | fzf --height=15 --reverse --info=inline --prompt="Merge branch: " \
+            --preview 'git log --oneline --color=always HEAD..{} | head -30')
       [[ -z "$branch" ]] && echo "Cancelled." && return 1
-      git merge --no-ff "$branch"
+      _ghh_run "git merge --no-ff $branch"
       ;;
 
     "RESET_TO_REMOTE")
-      # Auto-detect the default remote branch
-      local default_branch
-      default_branch=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/origin/||')
-      if [[ -z "$default_branch" ]]; then
-        for candidate in main master develop; do
-          if git rev-parse --verify "origin/$candidate" &>/dev/null; then
-            default_branch="$candidate"
-            break
-          fi
-        done
-      fi
-      # Let user pick: detected default or any remote branch
-      local remote_branch
-      if [[ -n "$default_branch" ]]; then
-        remote_branch=$(printf "%s\n" "$default_branch (default)" \
-          $(git branch -r --sort=-committerdate | sed 's|origin/||' | sed 's/^[* ]*//' \
-            | grep -v HEAD | grep -v "^${default_branch}$") \
-          | fzf --height=15 --reverse --no-info --prompt="Reset to remote branch: ")
-        [[ -z "$remote_branch" ]] && echo "Cancelled." && return 1
-        remote_branch="${remote_branch% (default)}"
-      else
-        remote_branch=$(git branch -r --sort=-committerdate | sed 's|origin/||' | sed 's/^[* ]*//' \
-          | grep -v HEAD \
-          | fzf --height=15 --reverse --no-info --prompt="Reset to remote branch: ")
-        [[ -z "$remote_branch" ]] && echo "Cancelled." && return 1
-      fi
+      # shared default-branch helper replaces the inline detection
+      local default_branch remote_branch
+      default_branch=$(_ghh_default_branch)
+      remote_branch=$(printf "%s\n" "$default_branch (default)" \
+        $(git branch -r --sort=-committerdate --format='%(refname:short)' | sed 's|^origin/||' \
+          | grep -v HEAD | grep -v "^${default_branch}$") \
+        | fzf --height=15 --reverse --info=inline --prompt="Reset to remote branch: ")
+      [[ -z "$remote_branch" ]] && echo "Cancelled." && return 1
+      remote_branch="${remote_branch% (default)}"
       local current_branch
       current_branch=$(git rev-parse --abbrev-ref HEAD)
       if [[ "$current_branch" != "$remote_branch" ]]; then
@@ -495,6 +678,7 @@ ghh() {
       if [[ "$confirm" =~ ^[Yy]$ ]]; then
         git fetch origin
         git reset --hard "origin/$remote_branch"
+        _ghh_add_history "git reset --hard origin/$remote_branch"
         echo "Reset to origin/$remote_branch."
       else
         echo "Cancelled."
@@ -502,11 +686,13 @@ ghh() {
       ;;
 
     "WORKTREE_ADD")
+      echo "Fetching remotes..."
       git fetch --prune &>/dev/null
       local branch
       branch=$(printf "%s\n" "[new branch]" \
-        $(git branch -a --sort=-committerdate | sed 's/^[* ]*//' | sed 's|remotes/||') \
-        | fzf --height=15 --reverse --no-info --prompt="Worktree branch: ")
+        $(git branch -a --sort=-committerdate --format='%(refname:short)') \
+        | fzf --height=15 --reverse --info=inline --prompt="Worktree branch: " \
+            --preview 'git log --oneline --color=always -8 {} 2>/dev/null')
       [[ -z "$branch" ]] && echo "Cancelled." && return 1
       local repo_name
       repo_name=$(basename "$(git rev-parse --show-toplevel)")
@@ -527,26 +713,42 @@ ghh() {
       ;;
 
     "WORKTREE_SWITCH")
-      local wt_line
-      wt_line=$(git worktree list | fzf --height=10 --reverse --no-info --prompt="Switch to worktree: ")
+      # porcelain output instead of parsing the human-readable table
+      local wt_line wt_path
+      wt_line=$(git worktree list --porcelain | awk '
+        /^worktree /{p=substr($0,10)}
+        /^branch /  {sub("refs/heads/","",$2); printf "%s\t[%s]\n", p, $2}
+        /^detached$/{printf "%s\t(detached)\n", p}' \
+        | fzf --height=10 --reverse --info=inline --prompt="Switch to worktree: " \
+            --delimiter=$'\t' \
+            --preview 'git -C {1} status -sb 2>/dev/null; echo; git -C {1} log --oneline --color=always -6 2>/dev/null')
       [[ -z "$wt_line" ]] && echo "Cancelled." && return 1
-      local wt_path
-      wt_path=$(echo "$wt_line" | awk '{print $1}')
+      wt_path="${wt_line%%$'\t'*}"
       cd "$wt_path" || { echo "Failed to cd to $wt_path"; return 1; }
+      _ghh_add_history "cd $(_ghh_sq "$wt_path")"
       echo "Switched to worktree: $wt_path"
       ;;
 
     "WORKTREE_REMOVE")
-      local wt_line
-      wt_line=$(git worktree list | tail -n +2 | fzf --height=10 --reverse --no-info --prompt="Remove worktree: ")
+      local wt_line wt_path wt_branch
+      wt_line=$(git worktree list --porcelain | awk '
+        /^worktree /{p=substr($0,10); n++}
+        /^branch /  {if(n>1){sub("refs/heads/","",$2); printf "%s\t[%s]\n", p, $2}}
+        /^detached$/{if(n>1) printf "%s\t(detached)\n", p}' \
+        | fzf --height=10 --reverse --info=inline --prompt="Remove worktree: " \
+            --delimiter=$'\t' \
+            --preview 'git -C {1} status -sb 2>/dev/null')
       [[ -z "$wt_line" ]] && echo "Cancelled." && return 1
-      local wt_path wt_branch
-      wt_path=$(echo "$wt_line" | awk '{print $1}')
-      wt_branch=$(echo "$wt_line" | sed 's/.*\[//' | sed 's/\]//')
+      wt_path="${wt_line%%$'\t'*}"
+      wt_branch="${wt_line#*$'\t'}"
+      wt_branch="${wt_branch#[}"; wt_branch="${wt_branch%]}"
       printf "Remove worktree '%s'? [y/N]: " "$wt_path"; read -r confirm
       if [[ "$confirm" =~ ^[Yy]$ ]]; then
-        git worktree remove "$wt_path"
-        if [[ -n "$wt_branch" ]]; then
+        if ! git worktree remove "$wt_path" 2>/dev/null; then
+          printf "Worktree is dirty or locked. Force remove? [y/N]: "; read -r force
+          if [[ "$force" =~ ^[Yy]$ ]]; then git worktree remove --force "$wt_path"; else echo "Kept."; return 0; fi
+        fi
+        if [[ -n "$wt_branch" && "$wt_branch" != "(detached)" ]]; then
           printf "Also delete branch '%s'? [y/N]: " "$wt_branch"; read -r del_branch
           [[ "$del_branch" =~ ^[Yy]$ ]] && git branch -D "$wt_branch"
         fi
@@ -557,39 +759,42 @@ ghh() {
 
     "WORKTREE_CLEANUP")
       local wt_lines
-      wt_lines=$(git worktree list | tail -n +2)
+      wt_lines=$(git worktree list --porcelain | awk '
+        /^worktree /{p=substr($0,10); n++}
+        /^branch /  {if(n>1){sub("refs/heads/","",$2); printf "%s\t[%s]\n", p, $2}}
+        /^detached$/{if(n>1) printf "%s\t(detached)\n", p}')
       if [[ -z "$wt_lines" ]]; then
         echo "No worktrees to clean up (only main worktree exists)."
         return 0
       fi
       local selected
       selected=$(printf "%s\n" "[remove ALL]" "$wt_lines" \
-        | fzf --multi --height=15 --reverse --no-info --prompt="Select worktrees to remove: " \
-               --header="tab to multi-select · enter to confirm")
+        | fzf --multi --height=15 --reverse --info=inline --prompt="Select worktrees to remove: " \
+               --header="tab to multi-select · enter to confirm" --delimiter=$'\t')
       [[ -z "$selected" ]] && echo "Cancelled." && return 1
-      # Expand [remove ALL] to all non-main worktrees
-      if echo "$selected" | grep -q '^\[remove ALL\]$'; then
+      if printf '%s\n' "$selected" | grep -q '^\[remove ALL\]$'; then
         selected="$wt_lines"
       fi
       local count
-      count=$(echo "$selected" | grep -c .)
+      count=$(printf '%s\n' "$selected" | grep -c .)
       printf "Remove %d worktree(s)? [y/N]: " "$count"; read -r confirm
       if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
         echo "Cancelled."; return 1
       fi
-      local branches=()
+      local branches=() line wt_p wt_b
       while IFS= read -r line; do
-        local wt_p wt_b
-        wt_p=$(echo "$line" | awk '{print $1}')
-        wt_b=$(echo "$line" | sed 's/.*\[//' | sed 's/\]//')
+        [[ "$line" == "[remove ALL]" ]] && continue
+        wt_p="${line%%$'\t'*}"
+        wt_b="${line#*$'\t'}"; wt_b="${wt_b#[}"; wt_b="${wt_b%]}"
         echo "Removing worktree: $wt_p"
         git worktree remove "$wt_p" 2>&1
-        [[ -n "$wt_b" ]] && branches+=("$wt_b")
+        [[ -n "$wt_b" && "$wt_b" != "(detached)" ]] && branches+=("$wt_b")
       done <<< "$selected"
       git worktree prune
       if [[ ${#branches[@]} -gt 0 ]]; then
-        printf "Also delete associated branches? [y/N]: "; read -r del_branches
+        printf "Also delete associated branches (%s)? [y/N]: " "${branches[*]}"; read -r del_branches
         if [[ "$del_branches" =~ ^[Yy]$ ]]; then
+          local b
           for b in "${branches[@]}"; do
             echo "Deleting branch: $b"
             git branch -D "$b" 2>&1
@@ -602,57 +807,62 @@ ghh() {
     "LOG_SEARCH_MSG")
       printf "Search commit messages for: "; read -r query
       [[ -z "$query" ]] && echo "Cancelled." && return 1
-      git log --oneline --grep="$query"
+      _ghh_run "git log --oneline --grep=$(_ghh_sq "$query")"
       ;;
 
     "LOG_SEARCH_CODE")
       printf "Search for string added/removed in code: "; read -r query
       [[ -z "$query" ]] && echo "Cancelled." && return 1
-      git log --oneline -S "$query"
+      _ghh_run "git log --oneline -S $(_ghh_sq "$query")"
       ;;
 
     "LOG_SEARCH_AUTHOR")
       printf "Search by author: "; read -r query
       [[ -z "$query" ]] && echo "Cancelled." && return 1
-      git log --oneline --author="$query"
+      _ghh_run "git log --oneline --author=$(_ghh_sq "$query")"
       ;;
 
     "CHERRY_PICK")
       local commit
-      commit=$(git log --oneline --all -50 | fzf --height=15 --reverse --no-info --prompt="Cherry-pick commit: " | awk '{print $1}')
+      commit=$(git log --oneline --all -50 \
+        | fzf --height=15 --reverse --info=inline --prompt="Cherry-pick commit: " \
+            --preview 'git show --color=always --stat {1}' \
+        | awk '{print $1}')
       [[ -z "$commit" ]] && echo "Cancelled." && return 1
-      git cherry-pick "$commit"
+      _ghh_run "git cherry-pick $commit"
       ;;
 
     "REFLOG_RECOVER")
       local entry
-      entry=$(git reflog --format='%h %gd %gs (%cr)' -30 | fzf --height=15 --reverse --no-info --prompt="Recover entry: ")
+      entry=$(git reflog --format='%h %gd %gs (%cr)' -30 \
+        | fzf --height=15 --reverse --info=inline --prompt="Recover entry: " \
+            --preview 'git show --color=always --stat {1} 2>/dev/null | head -40')
       [[ -z "$entry" ]] && echo "Cancelled." && return 1
       local ref
       ref=$(echo "$entry" | awk '{print $1}')
       local action
       action=$(printf "%s\n" "cherry-pick (apply commit to current branch)" "checkout (switch to that state)" \
-        | fzf --height=5 --reverse --no-info --prompt="Action: " | awk '{print $1}')
+        | fzf --height=5 --reverse --info=inline --prompt="Action: " | awk '{print $1}')
       [[ -z "$action" ]] && echo "Cancelled." && return 1
       case "$action" in
-        "cherry-pick") git cherry-pick "$ref" ;;
-        "checkout") git checkout "$ref" ;;
+        "cherry-pick") _ghh_run "git cherry-pick $ref" ;;
+        "checkout") _ghh_run "git checkout $ref" ;;
       esac
       ;;
 
     "TAG_CREATE")
       local tag_type
       tag_type=$(printf "%s\n" "annotated (recommended — includes message)" "lightweight (just a pointer)" \
-        | fzf --height=5 --reverse --no-info --prompt="Tag type: " | awk '{print $1}')
+        | fzf --height=5 --reverse --info=inline --prompt="Tag type: " | awk '{print $1}')
       [[ -z "$tag_type" ]] && echo "Cancelled." && return 1
       printf "Tag name (e.g. v1.0.0): "; read -r tag_name
       [[ -z "$tag_name" ]] && echo "Cancelled." && return 1
       if [[ "$tag_type" == "annotated" ]]; then
         printf "Tag message: "; read -r tag_msg
         [[ -z "$tag_msg" ]] && echo "Cancelled." && return 1
-        git tag -a "$tag_name" -m "$tag_msg"
+        _ghh_run "git tag -a $tag_name -m $(_ghh_sq "$tag_msg")"
       else
-        git tag "$tag_name"
+        _ghh_run "git tag $tag_name"
       fi
       printf "Push tag to remote? [Y/n]: "; read -r push_confirm
       [[ ! "$push_confirm" =~ ^[Nn]$ ]] && git push origin "$tag_name"
@@ -660,7 +870,9 @@ ghh() {
 
     "TAG_DELETE")
       local tag
-      tag=$(git tag --sort=-creatordate | fzf --height=15 --reverse --no-info --prompt="Delete tag: ")
+      tag=$(git tag --sort=-creatordate \
+        | fzf --height=15 --reverse --info=inline --prompt="Delete tag: " \
+            --preview 'git show --color=always --stat {} 2>/dev/null | head -30')
       [[ -z "$tag" ]] && echo "Cancelled." && return 1
       printf "Delete tag '%s'? [y/N]: " "$tag"; read -r confirm
       if [[ "$confirm" =~ ^[Yy]$ ]]; then
@@ -675,7 +887,7 @@ ghh() {
     "RELEASE_VIEW")
       _ghh_check_gh || return 1
       local release
-      release=$(gh release list | fzf --height=15 --reverse --no-info --prompt="View release: " | awk '{print $1}')
+      release=$(gh release list | fzf --height=15 --reverse --info=inline --prompt="View release: " | awk '{print $1}')
       [[ -z "$release" ]] && echo "Cancelled." && return 1
       gh release view "$release"
       ;;
@@ -683,23 +895,29 @@ ghh() {
     "SQUASH_N")
       printf "How many commits to squash? "
       read -r n
-      [[ -z "$n" ]] && echo "Cancelled." && return 1
-      git reset --soft "HEAD~$n" && git commit
+      [[ "$n" =~ ^[0-9]+$ ]] || { echo "Not a number. Cancelled."; return 1; }
+      # pre-fill the editor with the combined messages instead of a blank buffer
+      local msgs
+      msgs=$(git log --reverse --format='%s' -"$n")
+      _ghh_add_history "git reset --soft HEAD~$n"
+      git reset --soft "HEAD~$n" && git commit --edit -m "$msgs"
       ;;
 
     "REBASE_N")
       printf "How many commits to rebase? "
       read -r n
-      [[ -z "$n" ]] && echo "Cancelled." && return 1
-      git rebase -i "HEAD~$n"
+      [[ "$n" =~ ^[0-9]+$ ]] || { echo "Not a number. Cancelled."; return 1; }
+      _ghh_run "git rebase -i HEAD~$n"
       ;;
 
     "PR_CHECKOUT")
       _ghh_check_gh || return 1
       local pr
-      pr=$(gh pr list | fzf --height=15 --reverse --no-info --prompt="Checkout PR: " | awk '{print $1}')
+      pr=$(gh pr list | fzf --height=15 --reverse --info=inline --prompt="Checkout PR: " \
+        --preview 'gh pr view {1} 2>/dev/null | head -40' \
+        | awk '{print $1}')
       [[ -z "$pr" ]] && echo "Cancelled." && return 1
-      gh pr checkout "$pr"
+      _ghh_run "gh pr checkout $pr"
       ;;
 
     "PR_COMMENT")
@@ -707,14 +925,14 @@ ghh() {
       printf "Comment: "
       read -r comment
       [[ -z "$comment" ]] && echo "Cancelled." && return 1
-      gh pr comment --body "$comment"
+      _ghh_run "gh pr comment --body $(_ghh_sq "$comment")"
       ;;
 
     "DEEP_CHECKS")
       _ghh_check_gh || return 1
       echo "Fetching checks..."
       local check
-      check=$(gh pr checks 2>&1 | fzf --height=15 --reverse --no-info \
+      check=$(gh pr checks 2>&1 | fzf --height=15 --reverse --info=inline \
         --prompt="Pick a check > " --header="Enter to open in browser")
       [[ -z "$check" ]] && return 0
       local url
@@ -727,16 +945,44 @@ ghh() {
       ;;
 
     # -----------------------------------------------------------------------
-    # Default: show the command and prompt to run / copy / cancel
+    # risk-tiered execution for everything else
     # -----------------------------------------------------------------------
     *)
-      printf "\n-> %s\n\nRun it? [Y/n/copy]: " "$actual_cmd"
-      read -r action
-      case "$action" in
-        [Nn]) return 0 ;;
-        [Cc]*|copy) _ghh_copy "$actual_cmd" ;;
-        *) eval "$actual_cmd" ;;
+      case "$risk" in
+        RO)
+          _ghh_run "$actual_cmd"
+          ;;
+        DGR)
+          printf "\033[1;31mdestructive:\033[0m %s\n" "$actual_cmd"
+          printf "Type 'yes' to run (anything else cancels): "
+          read -r confirm
+          if [[ "$confirm" == "yes" ]]; then
+            _ghh_run "$actual_cmd"
+          else
+            echo "Cancelled."
+          fi
+          ;;
+        *)
+          printf "\n-> %s\n\nRun it? [Y/n/copy]: " "$actual_cmd"
+          read -r action
+          case "$action" in
+            [Nn]) return 0 ;;
+            [Cc]*|copy) _ghh_copy "$actual_cmd" ;;
+            *) _ghh_run "$actual_cmd" ;;
+          esac
+          ;;
       esac
       ;;
   esac
 }
+
+# ---------------------------------------------------------------------------
+# executed instead of sourced? Say so. (shebang guarantees bash here)
+# ---------------------------------------------------------------------------
+
+if [[ -n "${BASH_SOURCE[0]:-}" && "${BASH_SOURCE[0]}" == "$0" ]]; then
+  echo "ghh is a set of shell functions - it must be sourced, not executed."
+  echo "Add this line to ~/.zshrc or ~/.bashrc, then restart your shell:"
+  echo "  source \"$0\""
+  exit 1
+fi

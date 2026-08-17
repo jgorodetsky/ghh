@@ -12,9 +12,9 @@ You know the commands exist. You just can't remember the exact syntax. So you st
 
 ## The Solution
 
-Type `ghh`. Search for what you're thinking. Hit enter.
+Type `ghh`. Search for what you're thinking. Hit enter. Or skip a step: `ghh squash` opens the menu already filtered.
 
-`ghh` puts **100+ git and GitHub CLI commands** into a single, searchable, fzf-powered menu. No memorization. No context switching. One command to rule them all.
+`ghh` puts **120+ git and GitHub CLI commands** into a single, searchable, fzf-powered menu. No memorization. No context switching. One command to rule them all.
 
 It also includes `gc` — an interactive conventional commit builder that walks you through type, scope, and message with zero friction.
 
@@ -23,12 +23,18 @@ It also includes `gc` — an interactive conventional commit builder that walks 
 ## Features
 
 - **120+ commands** in one searchable menu — git, gh, PRs, CI, issues, branches, worktrees, tags, releases, stashes, diffs
+- **Pre-filter from the command line** — `ghh squash`, `ghh undo`, `ghh worktree`
+- **Your shell history works** — every command ghh runs lands in history as the resolved command, so the up arrow recalls `git switch hotfix-2`, not a mystery
+- **Risk tiers** — read-only commands run instantly, mutating ones confirm, destructive ones require typing `yes`
+- **Preview panes** — branch pickers show the log, stash pickers show the diff, cherry-pick shows the patch, staging shows per-file diffs
+- **Diff builder** — pick what vs what (branch, tag, commit, staged, working tree) and the format; ghh composes the command
+- **Fill-in-the-blank pickers** — `<branch>`, `<commit>`, `<file>`, `<tag>`, `<pr>` placeholders open fuzzy pickers; text ones prompt before anything runs
+- **RECENT section** — your most-used commands float to the top of the menu
+- **Custom commands** — add your own to `~/.config/ghh/commands.local`
 - **Interactive conventional commits** via `gc` — pick type, add scope, write message, confirm
-- **Smart chaining** — branch switching, stash picking, file blame, and PR checkout open secondary fzf pickers
 - **Drill into CI checks** — pick a failing check and open it directly in your browser
-- **Run, copy, or cancel** — every command gives you the choice
 - **Cross-platform** — macOS, Linux, and WSL with automatic clipboard and browser detection
-- **Zero config** — no config files, no setup, no themes. Just commands
+- **Zero config required** — no setup, no themes. Just commands
 - **One-line install** — curl it and go
 
 ---
@@ -107,7 +113,16 @@ A searchable menu appears. Type what you're thinking:
 | "Tag a release"          | `tag`        | Create, delete, or list tags              |
 | "Open in browser"        | `web`        | Opens PR/repo/issue in your browser       |
 
-For read-only commands (`git diff`, `git log`, `gh pr list`), ghh runs them directly. For commands that modify state, it shows the command and asks: **Run it? [Y/n/copy]**
+Every command carries a risk tier, shown in the preview pane before you commit to it:
+
+| Tier | Meaning | What happens on enter |
+| ---- | ------- | --------------------- |
+| `RO`   | read-only   | runs instantly, no prompt |
+| `MUT`  | mutating    | shows the command, asks **Run it? [Y/n/copy]** |
+| `DGR`  | destructive | requires typing `yes` — plain enter cancels |
+| `PICK` | guided      | opens a follow-up picker or prompt |
+
+Whatever ghh runs is also pushed into your shell history, so the up arrow gives you the exact command to tweak and rerun.
 
 ### `gc` — Interactive Conventional Commit
 
@@ -115,14 +130,25 @@ For read-only commands (`git diff`, `git log`, `gh pr list`), ghh runs them dire
 $ gc
 ```
 
-1. Pick commit type (feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert)
-2. Optionally add a scope
-3. Type your message
-4. Preview and confirm
+1. Shows you what's staged (and refuses immediately if nothing is)
+2. Pick commit type (feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert)
+3. Optionally add a scope
+4. Type your message, preview, confirm
 
-Produces: `feat(auth): add OAuth2 login flow`
+Produces: `feat(auth): add OAuth2 login flow` — and puts that exact `git commit -m ...` in your shell history.
 
-**Note:** `gc` does not stage files. Run `git add` first (or use `ghh` to stage interactively).
+**Note:** `gc` does not stage files. Run `git add` first (or `ghh stage` to pick files with diffs).
+
+### Custom commands
+
+Add your own entries — same format as the built-in menu:
+
+```bash
+mkdir -p ~/.config/ghh
+echo 'terraform fmt -recursive @@ format all terraform' >> ~/.config/ghh/commands.local
+```
+
+They show up under a CUSTOM section, searchable like everything else. Pick log and query history live in `~/.local/state/ghh/` — delete it to reset the RECENT section.
 
 ---
 
