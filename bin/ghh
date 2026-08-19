@@ -3,7 +3,27 @@
 # https://github.com/jgorodetsky/ghh
 # MIT License
 
-GHH_VERSION="0.4.1"
+GHH_VERSION="0.4.2"
+
+# remember where this file lives so stale shells can reload themselves
+if [[ -n "${ZSH_VERSION:-}" ]]; then
+  GHH_SOURCE_FILE="$0"
+else
+  GHH_SOURCE_FILE="${BASH_SOURCE[0]:-}"
+fi
+
+# functions live in shell memory; after an upgrade, open windows still run the
+# old code. If the file on disk carries a different version, re-source it.
+# Returns 0 when a reload happened (caller should re-dispatch).
+_ghh_reload_if_stale() {
+  [[ -n "${GHH_SOURCE_FILE:-}" && -r "$GHH_SOURCE_FILE" ]] || return 1
+  local disk_v
+  disk_v=$(sed -n 's/^GHH_VERSION="\(.*\)"/\1/p' "$GHH_SOURCE_FILE" | head -1)
+  [[ -n "$disk_v" && "$disk_v" != "$GHH_VERSION" ]] || return 1
+  echo "ghh: reloading v$disk_v (this shell had v$GHH_VERSION)"
+  source "$GHH_SOURCE_FILE"
+  return 0
+}
 
 # ---------------------------------------------------------------------------
 # Platform detection
@@ -222,6 +242,7 @@ EOF
 # ---------------------------------------------------------------------------
 
 gc() {
+  if _ghh_reload_if_stale; then gc "$@"; return $?; fi
   if ! git rev-parse --is-inside-work-tree &>/dev/null; then
     echo "Not a git repository."; return 1
   fi
@@ -430,6 +451,7 @@ _ghh_menu() {
 # ---------------------------------------------------------------------------
 
 ghh() {
+  if _ghh_reload_if_stale; then ghh "$@"; return $?; fi
   _ghh_check_fzf || return 1
 
   # flags
