@@ -3,7 +3,7 @@
 # https://github.com/jgorodetsky/ghh
 # MIT License
 
-GHH_VERSION="0.4.0"
+GHH_VERSION="0.4.1"
 
 # ---------------------------------------------------------------------------
 # Platform detection
@@ -658,7 +658,7 @@ ghh() {
           | grep -v HEAD | grep -v "^${default_branch}$") \
         | fzf --height=15 --reverse --info=inline --prompt="Reset to remote branch: ")
       [[ -z "$remote_branch" ]] && echo "Cancelled." && return 1
-      remote_branch="${remote_branch% (default)}"
+      remote_branch="${remote_branch%" (default)"}"
       local current_branch
       current_branch=$(git rev-parse --abbrev-ref HEAD)
       if [[ "$current_branch" != "$remote_branch" ]]; then
@@ -741,7 +741,7 @@ ghh() {
       [[ -z "$wt_line" ]] && echo "Cancelled." && return 1
       wt_path="${wt_line%%$'\t'*}"
       wt_branch="${wt_line#*$'\t'}"
-      wt_branch="${wt_branch#[}"; wt_branch="${wt_branch%]}"
+      wt_branch="${wt_branch#"["}"; wt_branch="${wt_branch%"]"}"
       printf "Remove worktree '%s'? [y/N]: " "$wt_path"; read -r confirm
       if [[ "$confirm" =~ ^[Yy]$ ]]; then
         if ! git worktree remove "$wt_path" 2>/dev/null; then
@@ -785,7 +785,7 @@ ghh() {
       while IFS= read -r line; do
         [[ "$line" == "[remove ALL]" ]] && continue
         wt_p="${line%%$'\t'*}"
-        wt_b="${line#*$'\t'}"; wt_b="${wt_b#[}"; wt_b="${wt_b%]}"
+        wt_b="${line#*$'\t'}"; wt_b="${wt_b#"["}"; wt_b="${wt_b%"]"}"
         echo "Removing worktree: $wt_p"
         git worktree remove "$wt_p" 2>&1
         [[ -n "$wt_b" && "$wt_b" != "(detached)" ]] && branches+=("$wt_b")
