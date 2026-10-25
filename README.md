@@ -29,7 +29,7 @@ It also includes `gc` — an interactive conventional commit builder that walks 
 - **Preview panes** — branch pickers show the log, stash pickers show the diff, cherry-pick shows the patch, staging shows per-file diffs
 - **Diff builder** — pick what vs what (branch, tag, commit, staged, working tree) and the format; ghh composes the command
 - **Fill-in-the-blank pickers** — `<branch>`, `<commit>`, `<file>`, `<tag>`, `<pr>` placeholders open fuzzy pickers; text ones prompt before anything runs
-- **RECENT section** — your most-used commands float to the top of the menu
+- **Your commands first** - the ones you pick most float to the top (marked ★), the last one first, and win ties when you search
 - **Custom commands** — add your own to `~/.config/ghh/commands.local`
 - **Interactive conventional commits** via `gc` — pick type, add scope, write message, confirm
 - **Drill into CI checks** — pick a failing check and open it directly in your browser
@@ -113,14 +113,16 @@ A searchable menu appears. Type what you're thinking:
 | "Tag a release"          | `tag`        | Create, delete, or list tags              |
 | "Open in browser"        | `web`        | Opens PR/repo/issue in your browser       |
 
-Every command carries a risk tier, shown in the preview pane before you commit to it:
+Search is exact, not fuzzy: each word you type must appear in the command, its description or its section, in any order: `repo view web`, `open repo` and `--web` all find `gh repo view --web`.
 
-| Tier | Meaning | What happens on enter |
+Every command carries a risk mark, explained in the preview pane before you commit to it:
+
+| Mark | Meaning | What happens on enter |
 | ---- | ------- | --------------------- |
-| `RO`   | read-only   | runs instantly, no prompt |
-| `MUT`  | mutating    | shows the command, asks **Run it? [Y/n/copy]** |
-| `DGR`  | destructive | requires typing `yes` — plain enter cancels |
-| `PICK` | guided      | opens a follow-up picker or prompt |
+| `●` green  | read-only   | runs instantly, no prompt |
+| `◆` yellow | mutating    | shows the command, asks **Run it? [Y/n/copy]** |
+| `▲` red    | destructive | requires typing `yes` - plain enter cancels |
+| `▸` cyan   | guided      | opens a follow-up picker or prompt, then runs the git/gh command shown |
 
 Whatever ghh runs is also pushed into your shell history, so the up arrow gives you the exact command to tweak and rerun.
 
@@ -148,7 +150,7 @@ mkdir -p ~/.config/ghh
 echo 'terraform fmt -recursive @@ format all terraform' >> ~/.config/ghh/commands.local
 ```
 
-They show up under a CUSTOM section, searchable like everything else. Pick log and query history live in `~/.local/state/ghh/` — delete it to reset the RECENT section.
+They show up under a CUSTOM section, searchable like everything else. Pick log and query history live in `~/.local/state/ghh/` - delete it to reset which commands float to the top.
 
 ---
 

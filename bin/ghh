@@ -225,15 +225,18 @@ usage:
   ghh --version    print version
   ghh-update       pull the latest version
 
-risk tiers shown in the preview pane:
-  RO   read-only    runs instantly, no prompt
-  MUT  mutating     shows the command, asks Run it? [Y/n/copy]
-  DGR  destructive  requires typing 'yes'; anything else cancels
-  PICK guided       opens a follow-up picker or prompt
+search: each word you type must appear in the command, description or section, any order
+  (ghh repo view web, ghh open repo, ghh --web all find gh repo view --web)
+
+risk marks, explained in the preview pane:
+  ●  read-only    runs instantly, no prompt
+  ◆  mutating     shows the command, asks Run it? [Y/n/copy]
+  ▲  destructive  requires typing 'yes'; anything else cancels
+  ▸  guided       opens a follow-up picker or prompt
 
 extras:
   custom commands   ~/.config/ghh/commands.local  (lines: "cmd @@ description")
-  recent + history  ~/.local/state/ghh/  (RECENT menu section, ctrl-p in query)
+  picks + history   ~/.local/state/ghh/  (your picks float up, marked ★; ctrl-p in query)
 EOF
 }
 
@@ -300,73 +303,90 @@ gc() {
 # ---------------------------------------------------------------------------
 # Command registry (A1)
 # ---------------------------------------------------------------------------
-# Format: RISK @@ COMMAND @@ DESCRIPTION
-#   RO=read-only  MUT=mutating  DGR=destructive  PICK=guided  HDR=section header
+# Format: RISK @@ COMMAND @@ DESCRIPTION [@@ SHOWN]
+#   RO=read-only  MUT=mutating  DGR=destructive  PICK=guided  HDR=section name
+# PICK entries name a guided flow; SHOWN is the git/gh command it ends up running,
+# displayed and searched in place of the flow name.
 # <tokens> in commands are prompted for before running.
 # $1 = resolved default branch.
 
 _ghh_menu() {
   local def="$1"
   printf "%s\n" \
-    "HDR @@ ── STAGE & COMMIT ─────────────────────────────────────" \
-    "PICK @@ gc @@ conventional commit (interactive)" \
+    "HDR @@ commit" \
+    "PICK @@ gc @@ conventional commit (asks type, scope, message) @@ git commit -m \"<type>(<scope>): <msg>\"" \
+    "MUT @@ git commit -m <message> @@ commit with a message" \
     "MUT @@ git add . @@ stage all changes" \
-    "PICK @@ STAGE_FILES @@ stage specific files (pick)" \
+    "PICK @@ STAGE_FILES @@ stage specific files (pick) @@ git add <files>" \
     "MUT @@ git add -p @@ stage specific hunks interactively" \
+    "MUT @@ git restore --staged <file> @@ unstage a file (undo git add)" \
+    "MUT @@ git restore --staged . @@ unstage everything" \
     "MUT @@ git stash @@ stash current changes" \
     "MUT @@ git stash pop @@ pop last stash" \
-    "PICK @@ PICK_STASH @@ pick a stash to apply" \
-    "HDR @@ ── DIFF & REVIEW ──────────────────────────────────────" \
+    "RO @@ git stash list @@ list stashes" \
+    "PICK @@ PICK_STASH @@ pick a stash to apply @@ git stash apply <stash>" \
+    "HDR @@ diff" \
     "RO @@ git diff @@ unstaged changes" \
     "RO @@ git diff --staged @@ staged changes" \
-    "PICK @@ DIFF_BUILDER @@ build any diff: what vs what, pick format" \
-    "RO @@ git diff $def @@ compare branch vs $def" \
-    "RO @@ git diff --name-only $def @@ changed filenames vs $def" \
+    "PICK @@ DIFF_BUILDER @@ build any diff: what vs what, pick format @@ git diff <from> <to>" \
+    "RO @@ git diff $def...HEAD @@ what this branch changed since $def (the PR diff)" \
+    "RO @@ git diff --name-only $def...HEAD @@ files this branch changed since $def" \
     "RO @@ git diff HEAD~1 HEAD @@ last commit diff" \
     "RO @@ git diff --name-only HEAD~1 HEAD @@ last commit files only" \
     "RO @@ git show HEAD @@ show last commit in full" \
     "RO @@ git show <commit> @@ show any commit (pick)" \
     "RO @@ git log --oneline -15 @@ recent commits" \
     "RO @@ git log --oneline --graph -20 @@ commit graph" \
-    "PICK @@ BLAME_FILE @@ blame a file (pick)" \
-    "PICK @@ LOG_SEARCH_MSG @@ search commits by message" \
-    "PICK @@ LOG_SEARCH_CODE @@ search commits that changed a string" \
-    "PICK @@ LOG_SEARCH_AUTHOR @@ search commits by author" \
-    "PICK @@ CHERRY_PICK @@ cherry-pick a commit (pick)" \
-    "PICK @@ REFLOG_RECOVER @@ recover a lost commit from reflog" \
-    "HDR @@ ── BRANCH ─────────────────────────────────────────────" \
-    "PICK @@ CHECKOUT_BRANCH @@ switch branch (fuzzy)" \
+    "RO @@ git log --oneline @{u}..HEAD @@ unpushed commits (not on the remote yet)" \
+    "PICK @@ BLAME_FILE @@ blame a file (pick) @@ git blame <file>" \
+    "PICK @@ LOG_SEARCH_MSG @@ search commits by message @@ git log --grep=<text>" \
+    "PICK @@ LOG_SEARCH_CODE @@ search commits that changed a string @@ git log -S <text>" \
+    "PICK @@ LOG_SEARCH_AUTHOR @@ search commits by author @@ git log --author=<name>" \
+    "PICK @@ CHERRY_PICK @@ cherry-pick a commit (pick) @@ git cherry-pick <commit>" \
+    "PICK @@ REFLOG_RECOVER @@ recover a lost commit from reflog @@ git reflog + cherry-pick or checkout" \
+    "HDR @@ branch" \
+    "PICK @@ CHECKOUT_BRANCH @@ switch branch (pick) @@ git switch <branch>" \
+    "MUT @@ git switch -c <name> @@ create a new branch and switch to it" \
+    "MUT @@ git branch -m <name> @@ rename the current branch" \
     "RO @@ git branch -a @@ list all branches" \
-    "PICK @@ DELETE_BRANCH @@ delete a branch (pick)" \
+    "PICK @@ DELETE_BRANCH @@ delete a branch (pick) @@ git branch -d <branch>" \
+    "MUT @@ git fetch --prune @@ fetch from remote, forget branches removed there" \
     "MUT @@ git pull --rebase @@ pull with rebase" \
     "MUT @@ git pull --rebase && git push @@ pull rebase then push" \
     "MUT @@ git push @@ push current branch" \
     "MUT @@ git push -u origin HEAD @@ push & set upstream" \
-    "PICK @@ MERGE_BRANCH @@ merge a branch (pick)" \
-    "PICK @@ RESET_TO_REMOTE @@ reset current branch to match remote" \
-    "HDR @@ ── WORKTREE ───────────────────────────────────────────" \
-    "PICK @@ WORKTREE_ADD @@ add a new worktree (pick branch)" \
-    "PICK @@ WORKTREE_SWITCH @@ switch to a worktree (cd)" \
+    "DGR @@ git push --force-with-lease @@ force push, refuses if someone else pushed" \
+    "PICK @@ MERGE_BRANCH @@ merge a branch (pick) @@ git merge --no-ff <branch>" \
+    "PICK @@ RESET_TO_REMOTE @@ reset current branch to match remote @@ git reset --hard origin/<branch>" \
+    "HDR @@ worktree" \
+    "PICK @@ WORKTREE_ADD @@ add a new worktree (pick branch) @@ git worktree add <path> <branch>" \
+    "PICK @@ WORKTREE_SWITCH @@ switch to a worktree (cd) @@ cd <worktree>" \
     "RO @@ git worktree list @@ list all worktrees" \
-    "PICK @@ WORKTREE_REMOVE @@ remove a worktree (pick)" \
-    "PICK @@ WORKTREE_CLEANUP @@ bulk remove worktrees + branches" \
+    "PICK @@ WORKTREE_REMOVE @@ remove a worktree (pick) @@ git worktree remove <worktree>" \
+    "PICK @@ WORKTREE_CLEANUP @@ bulk remove worktrees + branches @@ git worktree remove <worktrees>" \
     "MUT @@ git worktree prune @@ clean up stale worktree refs" \
-    "HDR @@ ── REWRITE HISTORY ────────────────────────────────────" \
+    "HDR @@ history" \
     "MUT @@ git reset HEAD~1 --soft @@ undo last commit (keep changes)" \
     "DGR @@ git reset HEAD~1 --hard @@ undo last commit (destroy)" \
+    "MUT @@ git revert <commit> @@ undo a commit with a new commit (safe after push)" \
     "DGR @@ git checkout -- . @@ discard all unstaged changes" \
+    "DGR @@ git restore <file> @@ discard unstaged changes to one file" \
+    "RO @@ git clean -nd @@ list untracked files git clean would delete" \
+    "DGR @@ git clean -fd @@ delete untracked files and folders" \
     "MUT @@ git commit --amend --no-edit @@ amend last commit (keep msg)" \
     "MUT @@ git commit --amend @@ amend last commit (edit msg)" \
-    "PICK @@ SQUASH_N @@ squash last N commits" \
-    "PICK @@ REBASE_N @@ interactive rebase last N" \
-    "HDR @@ ── STATUS & INFO ──────────────────────────────────────" \
+    "PICK @@ SQUASH_N @@ squash last N commits @@ git reset --soft HEAD~<n> && git commit" \
+    "PICK @@ REBASE_N @@ interactive rebase last N @@ git rebase -i HEAD~<n>" \
+    "HDR @@ status" \
     "RO @@ git status @@ full status (verbose)" \
     "RO @@ git status -sb @@ short status" \
     "RO @@ git remote -v @@ show remotes" \
     "RO @@ git config user.email @@ show git email" \
     "RO @@ git rev-parse --abbrev-ref HEAD @@ current branch name" \
     "RO @@ git log --oneline --all --graph @@ full repo graph" \
-    "HDR @@ ── PR: CREATE & EDIT ──────────────────────────────────" \
+    "RO @@ gh status @@ your GitHub: review requests, assigned issues, mentions" \
+    "RO @@ gh auth status @@ which GitHub account you're logged in as" \
+    "HDR @@ pr create" \
     "MUT @@ gh pr create @@ create PR interactively" \
     "MUT @@ gh pr create --fill @@ create PR from commit msgs" \
     "MUT @@ gh pr create --draft @@ create as draft" \
@@ -379,7 +399,8 @@ _ghh_menu() {
     "MUT @@ gh pr ready --undo @@ convert to draft" \
     "MUT @@ gh pr close @@ close PR" \
     "MUT @@ gh pr reopen @@ reopen PR" \
-    "HDR @@ ── PR: VIEW & REVIEW ─────────────────────────────────" \
+    "HDR @@ pr view" \
+    "RO @@ gh pr status @@ PRs for this branch, yours, and needing your review" \
     "RO @@ gh pr list @@ list open PRs" \
     "RO @@ gh pr list --author @me @@ list my PRs" \
     "RO @@ gh pr list --search review-requested:@me @@ PRs needing my review" \
@@ -387,30 +408,30 @@ _ghh_menu() {
     "RO @@ gh pr list --label <label> @@ list PRs with label" \
     "RO @@ gh pr view @@ view current PR details" \
     "RO @@ gh pr view <pr> @@ view a PR (pick)" \
-    "RO @@ gh pr view --web @@ open in browser" \
+    "RO @@ gh pr view --web @@ open the PR in the browser" \
     "RO @@ gh pr view --comments @@ show all comments" \
     "RO @@ gh pr diff @@ show PR diff" \
     "RO @@ gh pr diff <pr> @@ diff a PR (pick)" \
-    "PICK @@ PR_CHECKOUT @@ checkout a PR locally (pick)" \
-    "HDR @@ ── PR: CHECKS & CI ────────────────────────────────────" \
-    "RO @@ gh pr checks @@ show CI status" \
+    "PICK @@ PR_CHECKOUT @@ checkout a PR locally (pick) @@ gh pr checkout <pr>" \
+    "HDR @@ pr checks" \
+    "RO @@ gh pr checks @@ show CI status of the PR" \
     "RO @@ gh pr checks --watch @@ watch until checks complete" \
     "RO @@ gh pr checks --required @@ show only required checks" \
-    "PICK @@ DEEP_CHECKS @@ drill into a specific check" \
-    "HDR @@ ── PR: MERGE ──────────────────────────────────────────" \
+    "PICK @@ DEEP_CHECKS @@ drill into a specific check @@ gh pr checks, then open one" \
+    "HDR @@ pr merge" \
     "MUT @@ gh pr merge --squash @@ squash merge" \
     "MUT @@ gh pr merge --squash --auto @@ auto-merge when checks pass" \
     "MUT @@ gh pr merge --squash --delete-branch @@ squash merge & delete branch" \
     "MUT @@ gh pr merge --rebase @@ rebase merge" \
     "MUT @@ gh pr merge --merge @@ merge commit" \
     "MUT @@ gh pr merge --delete-branch @@ merge and delete branch" \
-    "HDR @@ ── PR: FEEDBACK ───────────────────────────────────────" \
+    "HDR @@ pr review" \
     "MUT @@ gh pr review --approve @@ approve PR" \
     "MUT @@ gh pr review --approve -b <comment> @@ approve with comment" \
     "MUT @@ gh pr review --request-changes @@ request changes" \
     "MUT @@ gh pr review --comment -b <comment> @@ leave review comment" \
-    "PICK @@ PR_COMMENT @@ comment on PR (type msg)" \
-    "HDR @@ ── CI / WORKFLOW RUNS ─────────────────────────────────" \
+    "PICK @@ PR_COMMENT @@ comment on PR (type msg) @@ gh pr comment --body <text>" \
+    "HDR @@ ci runs" \
     "RO @@ gh run list @@ list recent runs" \
     "RO @@ gh run list --status failure @@ list failed runs" \
     "RO @@ gh run list --branch $def @@ runs on $def" \
@@ -422,28 +443,107 @@ _ghh_menu() {
     "MUT @@ gh run rerun @@ rerun latest run" \
     "MUT @@ gh run download @@ download artifacts" \
     "MUT @@ gh run cancel @@ cancel in-progress run" \
-    "HDR @@ ── ISSUES ─────────────────────────────────────────────" \
+    "RO @@ gh workflow list @@ list workflows" \
+    "MUT @@ gh workflow run <workflow> @@ start a workflow by hand" \
+    "HDR @@ issues" \
     "RO @@ gh issue list @@ list open issues" \
     "RO @@ gh issue list --assignee @me @@ my issues" \
     "RO @@ gh issue list --label <label> @@ issues with label" \
-    "RO @@ gh issue view --web @@ open issue in browser" \
+    "RO @@ gh issue view <number> @@ view an issue" \
+    "RO @@ gh issue view --web <number> @@ open an issue in the browser" \
     "MUT @@ gh issue create @@ create interactively" \
-    "MUT @@ gh issue close @@ close issue" \
-    "MUT @@ gh issue comment --body <msg> @@ comment on issue" \
-    "HDR @@ ── REPO & SEARCH ─────────────────────────────────────" \
-    "RO @@ gh repo view --web @@ open repo in browser" \
+    "MUT @@ gh issue close <number> @@ close an issue" \
+    "MUT @@ gh issue comment <number> --body <msg> @@ comment on an issue" \
+    "HDR @@ repo" \
+    "RO @@ gh repo view @@ repo description and readme, in the terminal" \
+    "RO @@ gh repo view --web @@ open the repo in the browser" \
+    "RO @@ gh browse <file> @@ open a file on GitHub" \
     "MUT @@ gh repo clone <owner/repo> @@ clone a repo" \
     "MUT @@ gh repo fork @@ fork current repo" \
+    "MUT @@ gh repo create @@ create a new GitHub repo" \
     "RO @@ gh search repos <query> @@ search repos" \
     "RO @@ gh search code <query> @@ search code" \
     "RO @@ gh api notifications @@ your notifications" \
-    "HDR @@ ── TAGS & RELEASES ───────────────────────────────────" \
+    "HDR @@ tags" \
     "RO @@ git tag @@ list all tags" \
-    "PICK @@ TAG_CREATE @@ create a tag (annotated or lightweight)" \
-    "PICK @@ TAG_DELETE @@ delete a tag (pick)" \
+    "PICK @@ TAG_CREATE @@ create a tag (annotated or lightweight) @@ git tag -a <tag> -m <msg>" \
+    "PICK @@ TAG_DELETE @@ delete a tag (pick) @@ git tag -d <tag>" \
     "RO @@ gh release list @@ list releases" \
     "MUT @@ gh release create @@ create a release interactively" \
-    "PICK @@ RELEASE_VIEW @@ view a release (pick)"
+    "PICK @@ RELEASE_VIEW @@ view a release (pick) @@ gh release view <release>"
+}
+
+# how the menu is searched: command, description and section, whole words
+# in any order. tests/search.sh runs the same options.
+GHH_FZF_MATCH=(--ansi --delimiter=$'\t' --with-nth=3..6 --nth=2..4 --tabstop=1 --exact --scheme=history)
+
+# turn the registry (stdin) into one fzf row per command, no duplicates:
+#   risk \t command \t mark \t shown \t description \t section \t full shown \t preview note
+# the commands you pick most float to the top, the last one first.
+# $1 = pick log, $2 = screen width
+_ghh_rows() {
+  awk -F' @@ ' -v picks="$1" -v cols="${2:-100}" '
+    BEGIN {
+      while ((getline line < picks) > 0) { n++; p[n] = line }
+      # each pick counts less the older it is: half as much every 30 picks
+      for (i = 1; i <= n; i++) { score[p[i]] += 0.5 ^ ((n - i) / 30); used[p[i]]++ }
+      last = (n ? p[n] : "")
+      E = "\033["; R = E "0m"
+      mark["RO"] = E "32m●" R; mark["MUT"] = E "33m◆" R
+      mark["DGR"] = E "31m▲" R; mark["PICK"] = E "36m▸" R
+      note["RO"] = "read-only, runs as soon as you press enter"
+      note["MUT"] = "changes things, shows the command and asks first"
+      note["DGR"] = "destructive, you type yes to run it"
+      note["PICK"] = "guided, asks for the details, then runs it"
+    }
+    $1 == "HDR" { sec = $2; next }
+    NF >= 3 && !($2 in seen) {
+      seen[$2] = 1; m++
+      risk[m] = $1; cmd[m] = $2; desc[m] = $3; shown[m] = (NF >= 4 ? $4 : $2); section[m] = sec
+      if (length(shown[m]) > wc) wc = length(shown[m])
+      if (length(desc[m]) > wd) wd = length(desc[m])
+    }
+    END {
+      # nothing is cut off (fzf only searches what it shows), so a long
+      # command or description pushes the rest of its own row right
+      if (wc > int(cols * 0.4)) wc = int(cols * 0.4)
+      if (wd > cols - wc - 21) wd = cols - wc - 21
+      # float: the last pick, then up to 7 more by score
+      k = 0
+      for (i = 1; i <= m; i++) if (cmd[i] == last) { k++; top[k] = i; floated[i] = 1 }
+      while (k < 8) {
+        best = 0
+        for (i = 1; i <= m; i++)
+          if (!(i in floated) && used[cmd[i]] && (!best || score[cmd[i]] > score[cmd[best]])) best = i
+        if (!best) break
+        k++; top[k] = best; floated[best] = 1
+      }
+      for (j = 1; j <= k; j++) row(top[j])
+      for (i = 1; i <= m; i++) if (!(i in floated)) row(i)
+    }
+    function pad(s, w) { return length(s) >= w ? s : s sprintf("%" (w - length(s)) "s", "") }
+    # bold command, <tokens> in plain italics
+    function paint(s,    out) {
+      out = ""
+      while (match(s, /<[^>]*>/)) {
+        out = out substr(s, 1, RSTART - 1) E "22;3m" substr(s, RSTART, RLENGTH) E "23;1m"
+        s = substr(s, RSTART + RLENGTH)
+      }
+      return E "1m" out s R
+    }
+    function row(i,    c, d, tail, info) {
+      c = shown[i]; d = desc[i]
+      info = note[risk[i]]
+      if (used[cmd[i]]) {
+        info = info " · picked " used[cmd[i]] "x"
+        tail = E "33m★ " (cmd[i] == last ? "last, " : "") used[cmd[i]] "x" R
+      } else {
+        tail = E "2;3m" section[i] R
+      }
+      printf "%s\t%s\t%s \t%s\t%s\t%s\t%s\t%s\n", risk[i], cmd[i], mark[risk[i]],
+        paint(c) substr(pad(c, wc), length(c) + 1) "  ", E "2m" pad(d, wd) R "  ", tail, shown[i], info
+    }
+  '
 }
 
 # ---------------------------------------------------------------------------
@@ -470,46 +570,35 @@ ghh() {
   # user-defined commands from ~/.config/ghh/commands.local
   local custom="${XDG_CONFIG_HOME:-$HOME/.config}/ghh/commands.local"
   if [[ -f "$custom" ]] && grep -q ' @@ ' "$custom" 2>/dev/null; then
-    menu+=$'\n'"HDR @@ ── CUSTOM ────────────────────────────────────────────"
+    menu+=$'\n'"HDR @@ custom"
     menu+=$'\n'"$(awk '/ @@ /{print "MUT @@ " $0}' "$custom")"
   fi
 
-  # RECENT section from the pick log (top 5 by use count)
+  # one row per command; most-picked float to the top (see _ghh_rows)
   local picks="$state/picks"
-  if [[ -s "$picks" ]]; then
-    local rlines="" c line
-    while IFS= read -r c; do
-      [[ -z "$c" ]] && continue
-      line=$(printf '%s\n' "$menu" | grep -F -m1 " @@ $c @@ ")
-      [[ -n "$line" ]] && rlines+="$line"$'\n'
-    done < <(awk '{c[$0]++; l[$0]=NR} END {for (k in c) printf "%d\t%d\t%s\n", c[k], l[k], k}' "$picks" \
-      | sort -t$'\t' -k1,1rn -k2,2rn | head -5 | cut -f3-)
-    if [[ -n "$rlines" ]]; then
-      menu="HDR @@ ── RECENT ─────────────────────────────────────────────"$'\n'"${rlines%$'\n'}"$'\n'"$menu"
-    fi
-  fi
+  local e=$'\033[' legend
+  legend="${e}32m●${e}0m runs now   ${e}33m◆${e}0m asks first   ${e}31m▲${e}0m type yes   ${e}36m▸${e}0m guided   ${e}33m★${e}0m you use it"
 
-  # query pre-fill · preview pane · tier shown · query history · match counter
   local selection
-  selection=$(printf '%s\n' "$menu" | fzf \
-    --height=32 --reverse --info=inline \
-    --delimiter=' @@ ' --with-nth=2.. --nth=2,3 \
+  selection=$(printf '%s\n' "$menu" | _ghh_rows "$picks" "${COLUMNS:-100}" | fzf \
+    "${GHH_FZF_MATCH[@]}" \
+    --height=32 --reverse --info=inline-right \
     --query="$*" \
     --history="$state/history" \
-    --prompt="ghh > " \
-    --header="RO runs instantly · MUT confirms · DGR needs 'yes' · PICK guided" \
-    --preview 'printf "$ %s\n\n%s\n\ntier: %s\n" {2} {3} {1}' \
-    --preview-window=down,5,wrap)
+    --prompt="ghh › " \
+    --header="$legend" \
+    --ghost="type words from the command or what it does, like: undo commit" \
+    --color='hl:yellow:bold:underline,hl+:yellow:bold:underline' \
+    --preview 'printf "\033[1m$ %s\033[0m\n\033[2m%s\033[0m\n" {7} {8}' \
+    --preview-window=down,2,border-top,wrap)
 
   [[ -z "$selection" ]] && return 0
 
-  local risk="${selection%% @@ *}"
-  local rest="${selection#* @@ }"
-  local actual_cmd="${rest%% @@ *}"
+  local risk="${selection%%$'\t'*}"
+  local rest="${selection#*$'\t'}"
+  local actual_cmd="${rest%%$'\t'*}"
 
-  [[ "$risk" == "HDR" ]] && return 0
-
-  # log the pick (by command) for the RECENT section
+  # log the pick (by command) so it floats up next time
   echo "$actual_cmd" >> "$picks" 2>/dev/null
 
   # fill <token> placeholders before anything runs.
