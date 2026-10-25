@@ -49,7 +49,7 @@ if git rev-parse "v$VERSION" &>/dev/null; then
   exit 1
 fi
 
-CURRENT_VERSION=$(grep 'GHH_VERSION=' bin/ghh | head -1 | sed 's/.*"\(.*\)"/\1/')
+CURRENT_VERSION=$(grep '^GHH_VERSION=' bin/ghh | head -1 | sed 's/.*"\(.*\)"/\1/')
 echo ""
 echo "  Current version: $CURRENT_VERSION"
 echo "  New version:     $VERSION"
@@ -63,7 +63,12 @@ printf "Proceed? [y/N]: "; read -r confirm
 
 echo ""
 echo "[1/6] Bumping version in bin/ghh..."
-sed -i '' "s/GHH_VERSION=\".*\"/GHH_VERSION=\"$VERSION\"/" bin/ghh
+# only the assignment at the start of a line: the pattern also appears inside ghh's own code
+sed -i '' "s/^GHH_VERSION=\"[^\"]*\"\$/GHH_VERSION=\"$VERSION\"/" bin/ghh
+# the bump must change exactly one line, and ghh must still load in both shells
+[ "$(git diff --numstat bin/ghh | awk '{ print $1 "/" $2 }')" = "1/1" ] || { echo "version bump touched more than one line in bin/ghh; stopping"; git checkout bin/ghh; exit 1; }
+bash -n bin/ghh && zsh -n bin/ghh || { echo "bin/ghh doesn't parse after the bump; stopping"; git checkout bin/ghh; exit 1; }
+tests/search.sh >/dev/null || { echo "search tests fail after the bump; stopping"; git checkout bin/ghh; exit 1; }
 
 # -------------------------------------------------------------------------
 # Step 2: Update Homebrew formula URL (SHA256 placeholder for now)
