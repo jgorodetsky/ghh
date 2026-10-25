@@ -3,7 +3,7 @@
 # https://github.com/jgorodetsky/ghh
 # MIT License
 
-GHH_VERSION="0.5.0"
+GHH_VERSION="0.5.1"
 
 # remember where this file lives so stale shells can reload themselves
 if [[ -n "${ZSH_VERSION:-}" ]]; then
