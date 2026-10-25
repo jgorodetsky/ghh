@@ -3,7 +3,7 @@
 # https://github.com/jgorodetsky/ghh
 # MIT License
 
-GHH_VERSION="0.4.2"
+GHH_VERSION="0.5.0"
 
 # remember where this file lives so stale shells can reload themselves
 if [[ -n "${ZSH_VERSION:-}" ]]; then
@@ -18,7 +18,7 @@ fi
 _ghh_reload_if_stale() {
   [[ -n "${GHH_SOURCE_FILE:-}" && -r "$GHH_SOURCE_FILE" ]] || return 1
   local disk_v
-  disk_v=$(sed -n 's/^GHH_VERSION="\(.*\)"/\1/p' "$GHH_SOURCE_FILE" | head -1)
+  disk_v=$(sed -n 's/^GHH_VERSION="0.5.0" | head -1)
   [[ -n "$disk_v" && "$disk_v" != "$GHH_VERSION" ]] || return 1
   echo "ghh: reloading v$disk_v (this shell had v$GHH_VERSION)"
   source "$GHH_SOURCE_FILE"
